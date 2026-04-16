@@ -15,13 +15,30 @@ import subprocess
 import threading
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
+# Log file lives beside the script itself so it survives sudo vs normal runs.
+# If the directory isn't writable (e.g. read-only fs), fall back to stdout only.
+_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rpi_test.log")
+
+def _make_handlers():
+    handlers = [logging.StreamHandler(sys.stdout)]
+    try:
+        # Fix ownership if a previous sudo run left a root-owned log
+        if os.path.exists(_LOG_FILE) and not os.access(_LOG_FILE, os.W_OK):
+            try:
+                os.remove(_LOG_FILE)
+            except PermissionError:
+                print(f"\033[93m⚠\033[0m  Log file owned by root — run once with sudo to fix,"
+                      f" or: sudo rm {_LOG_FILE}")
+                return handlers   # stdout only
+        handlers.append(logging.FileHandler(_LOG_FILE))
+    except (PermissionError, OSError) as e:
+        print(f"\033[93m⚠\033[0m  Cannot open log file ({e}) — logging to stdout only")
+    return handlers
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("rpi_test.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=_make_handlers(),
 )
 log = logging.getLogger(__name__)
 
@@ -158,14 +175,18 @@ class _RPiGPIOAdapter(_GPIOAdapter):
         self._G.add_event_detect(pin, e, callback=callback)
 
     def _release_pins(self, *pins):
-        """Clean up only the specified pins without wiping GPIO mode."""
+        """
+        Reset only explicitly requested pins back to safe INPUT state.
+        Uses GPIO.setup(pin, IN) instead of GPIO.cleanup(pin) — cleanup()
+        wipes ALL pins AND the BCM mode, even pins we didn't touch.
+        """
+        self._ensure_mode()
         for p in pins:
             try:
-                self._G.cleanup(p)
+                self._G.setup(p, self._G.IN)
             except Exception:
                 pass
-        # Re-apply mode immediately so next test finds it intact
-        self._ensure_mode()
+        # Mode stays set — no cleanup() call here
 
     def cleanup(self):
         """Full cleanup — only called at program exit."""
@@ -666,27 +687,107 @@ def system_info():
 # ══════════════════════════════════════════════════════════════════════════════
 # GPIO PIN SNAPSHOT
 # ══════════════════════════════════════════════════════════════════════════════
+def _sysfs_pin_info(bcm: int) -> tuple:
+    """
+    Read a BCM pin's mode and value directly from the kernel sysfs/debugfs
+    WITHOUT calling GPIO.setup() — so it never clobbers manually set pins.
+    Returns (mode_str, value_int|None).
+    mode_str is one of: 'OUT', 'IN', 'ALT0'..'ALT5', '???'
+    """
+    # Try /sys/kernel/debug/gpio  (needs root but gives mode + value)
+    debug = "/sys/kernel/debug/gpio"
+    if os.path.exists(debug):
+        try:
+            with open(debug) as f:
+                for line in f:
+                    # lines look like:  gpio-17  (              |sysfs               ) in  lo
+                    if f"gpio-{bcm} " in line or f"gpio-{bcm}\t" in line:
+                        parts = line.split(")")
+                        if len(parts) >= 2:
+                            rest  = parts[-1].strip().split()
+                            mode  = rest[0].upper() if rest else "???"
+                            level = 1 if (len(rest) > 1 and "hi" in rest[1]) else 0
+                            return mode, level
+        except (PermissionError, OSError):
+            pass
+
+    # Fallback: /sys/class/gpio/gpioN  (only exists if pin was exported)
+    gpio_dir = f"/sys/class/gpio/gpio{bcm}"
+    if os.path.exists(gpio_dir):
+        try:
+            with open(f"{gpio_dir}/direction") as f:
+                mode = f.read().strip().upper()   # 'in' or 'out'
+            with open(f"{gpio_dir}/value") as f:
+                val  = int(f.read().strip())
+            return mode, val
+        except (PermissionError, OSError):
+            pass
+
+    # Last resort: use RPi.GPIO gpio_function() — read-only, no setup() call
+    if HAS_GPIO and GPIO_ADAPTER.name == "RPi.GPIO":
+        try:
+            fn = GPIO_ADAPTER._G.gpio_function(bcm)
+            # 0=OUT, 1=IN, 2=ALT5, 3=ALT4, 4=ALT0, 5=ALT1, 6=ALT2, 7=ALT3
+            fn_map = {0:"OUT", 1:"IN", 2:"ALT5", 3:"ALT4",
+                      4:"ALT0", 5:"ALT1", 6:"ALT2", 7:"ALT3"}
+            mode = fn_map.get(fn, "???")
+            # Read value only for IN/OUT (avoid disturbing ALT pins)
+            if fn in (0, 1):
+                val = GPIO_ADAPTER._G.input(bcm)
+                return mode, val
+            return mode, None
+        except Exception:
+            pass
+
+    return "???", None
+
+
 def gpio_snapshot():
     print(f"\n{CYAN}=== GPIO PIN STATE SNAPSHOT ==={RESET}")
-    if not HAS_GPIO:
-        fail("No GPIO backend available"); return
+    info("Reading pin state from kernel — no pins are reconfigured")
+    print()
 
-    bcm_pins = [p[1] for p in PIN_MAP if p[1] is not None]
-    states   = {}
-    try:
-        for pin in bcm_pins:
-            GPIO_ADAPTER.setup(pin, "in")
-            states[pin] = GPIO_ADAPTER.input(pin)
-    finally:
-        GPIO_ADAPTER._release_pins(*bcm_pins)
+    # Also run gpio readall if available — gives the most accurate picture
+    has_gpio_cmd = os.system("which gpio > /dev/null 2>&1") == 0
 
-    print(f"  {DIM}{'BCM':<8}{'Phys':<6}{'State'}{RESET}")
-    for pin in sorted(states):
-        phys  = _bcm_to_phys(pin)
-        level = states[pin]
-        color = GREEN if level else DIM
-        label = "HIGH" if level else "LOW"
-        print(f"  {color}GPIO{pin:<4}  Pin {phys:<4}  {label}{RESET}")
+    # Collect sysfs data for our PIN_MAP pins
+    bcm_pins = sorted(p[1] for p in PIN_MAP if p[1] is not None)
+    rows = []
+    for bcm in bcm_pins:
+        phys = _bcm_to_phys(bcm)
+        # Find label from PIN_MAP
+        label = next((p[2] for p in PIN_MAP if p[1] == bcm), f"GPIO{bcm}")
+        ptype = next((p[3] for p in PIN_MAP if p[1] == bcm), "GPIO")
+        mode, val = _sysfs_pin_info(bcm)
+        rows.append((bcm, phys, label, ptype, mode, val))
+
+    # Header
+    print(f"  {DIM}{'BCM':<6}{'Phys':<6}{'Label':<9}{'Mode':<6}{'Value'}{RESET}")
+    print(f"  {DIM}{'─'*40}{RESET}")
+
+    for bcm, phys, label, ptype, mode, val in rows:
+        if val is None:
+            val_str   = f"{DIM}  —{RESET}"
+            row_color = DIM
+        elif mode == "OUT":
+            val_str   = f"{GREEN}  HIGH{RESET}" if val else f"{RED}   LOW{RESET}"
+            row_color = GREEN if val else RED
+        else:
+            val_str   = f"{CYAN}  HIGH{RESET}" if val else f"{DIM}   LOW{RESET}"
+            row_color = RESET
+
+        mode_color = GREEN if mode == "OUT" else CYAN if mode == "IN" else YELLOW
+        print(f"  {_pc(ptype, f'GPIO{bcm:<3}')}"
+              f"  {DIM}P{phys:<5}{RESET}"
+              f"  {_pc(ptype, f'{label:<8}')}"
+              f"  {mode_color}{mode:<6}{RESET}"
+              f"{val_str}")
+
+    print()
+    if has_gpio_cmd:
+        info("Full wiringPi table  →  run: gpio readall")
+    else:
+        info("Install wiringPi for full table: sudo apt install wiringpi")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1103,33 +1204,31 @@ def manual_gpio():
     print(f"\n{CYAN}=== MANUAL GPIO CONTROL ==={RESET}")
     if not HAS_GPIO:
         fail("No GPIO backend available"); return
-    pin = None
     try:
         bcm  = int(_input("  BCM GPIO number: "))
         phys = _bcm_to_phys(bcm)
         info(f"GPIO{bcm} → physical Pin {phys}")
         mode = _input("  Mode (out/in): ").strip().lower()
-        pin  = bcm
         if mode == "out":
             GPIO_ADAPTER.setup(bcm, "out")
             val = int(_input("  Value (1=HIGH, 0=LOW): "))
             GPIO_ADAPTER.output(bcm, val)
             ok(f"GPIO{bcm} (Pin {phys}) → {'HIGH' if val else 'LOW'}")
+            info("Pin will hold this state until the next test or program exit")
             log.info(f"Manual GPIO{bcm} = {val}")
+            # Do NOT call _release_pins here — that would reset the output level
         elif mode == "in":
             GPIO_ADAPTER.setup(bcm, "in")
             val = GPIO_ADAPTER.input(bcm)
             ok(f"GPIO{bcm} (Pin {phys}) reads {'HIGH' if val else 'LOW'} ({val})")
             log.info(f"Manual GPIO{bcm} read {val}")
+            GPIO_ADAPTER._release_pins(bcm)   # safe to release input pins
         else:
             warn("Use 'in' or 'out'")
     except PermissionError:
         fail("PermissionError — sudo usermod -aG gpio $USER  then re-login")
     except (ValueError, KeyboardInterrupt):
         fail("Invalid input")
-    finally:
-        if pin is not None:
-            GPIO_ADAPTER._release_pins(pin)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1137,8 +1236,9 @@ def manual_gpio():
 # ══════════════════════════════════════════════════════════════════════════════
 def view_log(lines: int = 40):
     print(f"\n{CYAN}=== SESSION LOG — last {lines} lines ==={RESET}")
+    print(f"  {DIM}{_LOG_FILE}{RESET}")
     try:
-        with open("rpi_test.log") as f:
+        with open(_LOG_FILE) as f:
             tail = f.readlines()[-lines:]
         for line in tail:
             line  = line.rstrip()
@@ -1323,12 +1423,21 @@ def menu():
 # ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    if "--headless"   in sys.argv: run_headless()
-    elif "--check"    in sys.argv: check_deps()
-    elif "--info"     in sys.argv: system_info()
-    elif "--backends" in sys.argv: show_backends()
-    elif "--snapshot" in sys.argv: gpio_snapshot()
-    elif "--save-config" in sys.argv: save_default_config()
-    else:
-        check_deps(silent=True)
-        menu()
+    try:
+        if "--headless"      in sys.argv: run_headless()
+        elif "--check"       in sys.argv: check_deps()
+        elif "--info"        in sys.argv: system_info()
+        elif "--backends"    in sys.argv: show_backends()
+        elif "--snapshot"    in sys.argv: gpio_snapshot()
+        elif "--save-config" in sys.argv: save_default_config()
+        else:
+            check_deps(silent=True)
+            menu()
+    except KeyboardInterrupt:
+        print(f"\n\n  {YELLOW}⚠{RESET}  Interrupted — cleaning up…")
+        try:
+            GPIO_ADAPTER.cleanup()
+        except Exception:
+            pass
+        print(f"  {CYAN}ℹ{RESET}  Bye!")
+        sys.exit(0)
