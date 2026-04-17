@@ -1,38 +1,41 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi Hardware Test Suite — Enhanced
-Covers: GPIO, PWM, I2C, SPI, UART, Servo, Interrupts,
-        System Info, Pin Snapshot, Dep Check, Headless CI
-Alternatives: pigpio, gpiod, lgpio, smbus2, busio (CircuitPython)
+Raspberry Pi Hardware Test Suite — v2.1 Enhanced
+Covers: GPIO, PWM, I2C, SPI, UART, Servo, 1-Wire/DS18B20,
+        Interrupts, Pull-up/down, System Info, Network Info,
+        Pin Snapshot, Alternate Functions, Dep Check, Headless CI,
+        JSON output, Temperature Monitor
+Backends: RPi.GPIO, pigpio, lgpio, gpiod, gpiozero
+Alt libs:  smbus2, busio (CircuitPython/Blinka), spidev, pyserial
 """
 
 import os
 import sys
 import time
 import json
+import glob
+import socket
 import logging
 import subprocess
 import threading
+import datetime
+import io
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
-# Log file lives beside the script itself so it survives sudo vs normal runs.
-# If the directory isn't writable (e.g. read-only fs), fall back to stdout only.
 _LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rpi_test.log")
 
 def _make_handlers():
     handlers = [logging.StreamHandler(sys.stdout)]
     try:
-        # Fix ownership if a previous sudo run left a root-owned log
         if os.path.exists(_LOG_FILE) and not os.access(_LOG_FILE, os.W_OK):
             try:
                 os.remove(_LOG_FILE)
             except PermissionError:
-                print(f"\033[93m⚠\033[0m  Log file owned by root — run once with sudo to fix,"
-                      f" or: sudo rm {_LOG_FILE}")
-                return handlers   # stdout only
+                print(f"\033[93m⚠\033[0m  Log file owned by root — sudo rm {_LOG_FILE}")
+                return handlers
         handlers.append(logging.FileHandler(_LOG_FILE))
     except (PermissionError, OSError) as e:
-        print(f"\033[93m⚠\033[0m  Cannot open log file ({e}) — logging to stdout only")
+        print(f"\033[93m⚠\033[0m  Cannot open log file ({e}) — stdout only")
     return handlers
 
 logging.basicConfig(
@@ -49,6 +52,8 @@ YELLOW = "\033[93m"
 CYAN   = "\033[96m"
 BOLD   = "\033[1m"
 DIM    = "\033[2m"
+MAGENTA= "\033[95m"
+WHITE  = "\033[97m"
 RESET  = "\033[0m"
 
 PIN_COLORS = {
@@ -61,14 +66,18 @@ PIN_COLORS = {
     "UART":  "\033[33m",
     "PWM":   "\033[95m",
     "ID":    "\033[37m",
+    "ONEWIRE": "\033[96m",
+    "PCM":   "\033[93m",
+    "CLK":   "\033[35m",
 }
 
 def ok(msg):   print(f"  {GREEN}✔ PASS{RESET}  {msg}")
 def fail(msg): print(f"  {RED}✖ FAIL{RESET}  {msg}")
 def info(msg): print(f"  {CYAN}ℹ{RESET}  {msg}")
 def warn(msg): print(f"  {YELLOW}⚠{RESET}  {msg}")
+def head(msg): print(f"\n{CYAN}{'═'*54}{RESET}\n{CYAN}  {msg}{RESET}\n{CYAN}{'═'*54}{RESET}")
 
-# ── Config file support ────────────────────────────────────────────────────────
+# ── Config file ────────────────────────────────────────────────────────────────
 CONFIG_FILE = "rpi_test.json"
 DEFAULT_CONFIG = {
     "gpio_pairs":   [[17, 27], [22, 23], [24, 25]],
@@ -81,6 +90,10 @@ DEFAULT_CONFIG = {
     "spi_device":   0,
     "spi_speed_hz": 500000,
     "i2c_bus":      1,
+    "onewire_pin":  4,
+    "temp_interval_s": 2,
+    "temp_samples":    10,
+    "pulltest_pin": 27,
 }
 
 def load_config() -> dict:
@@ -102,8 +115,9 @@ def save_default_config():
 
 CFG = load_config()
 
-# ── Headless mode ──────────────────────────────────────────────────────────────
-HEADLESS = "--headless" in sys.argv
+# ── Headless / JSON mode ───────────────────────────────────────────────────────
+HEADLESS    = "--headless" in sys.argv
+JSON_OUTPUT = "--json"     in sys.argv
 
 def _input(prompt: str) -> str:
     if HEADLESS:
@@ -113,56 +127,362 @@ def _input(prompt: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GPIO BACKEND LAYER
+# 40-PIN MAP + BCM2711 ALTERNATE FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════════════
 #
-#  Priority: RPi.GPIO → pigpio → lgpio → gpiod → gpiozero
+# Each entry:  (phys, bcm, label, type, desc, alt_functions)
 #
-#  KEY FIX: cleanup() only releases pins — it does NOT tear down the adapter.
-#  GPIO.setmode(BCM) is called once at init and never cleared between tests.
-#  Each adapter provides _release_pins() for per-test cleanup instead.
+# alt_functions sourced VERBATIM from:
+#   Raspberry Pi 4 Model B Datasheet  RP-008341-DS  Release 1.1  (March 2024)
+#   Table 5: Raspberry Pi 4 GPIO Alternate Functions
+#   https://datasheets.raspberrypi.com/rpi4/raspberry-pi-4-datasheet.pdf
+#
+# Covers BCM2711 GPIO0–GPIO27 (28 user-accessible GPIOs on the 40-pin header).
+# "Pull" column = default pull state on power-up (High = pull-up, Low = pull-down).
+# Empty string "" = not assigned / reserved in the datasheet.
+
+PIN_MAP = [
+    # ── Power / Ground (no BCM) ────────────────────────────────────────────────
+    ( 1, None, "3V3",    "PWR33",   "3.3V power rail (~50 mA max total)",    {}),
+    ( 2, None, "5V",     "PWR5",    "5V rail — direct from USB-C supply",    {}),
+    # ── GPIO0 / GPIO1 — HAT ID EEPROM (avoid unless using as I2C0) ────────────
+    ( 3,  2,   "SDA1",   "I2C",
+      "I2C1 data — 1.8 kΩ board pull-up — GPIO2 pull=High",
+      {"ALT0":"SDA1",       "ALT1":"SA3",   "ALT2":"LCD_VSYNC",  "ALT3":"SPI3_MOSI",   "ALT4":"CTS2",        "ALT5":"SDA3"}),
+    ( 4, None, "5V",     "PWR5",    "5V power rail",                         {}),
+    ( 5,  3,   "SCL1",   "I2C",
+      "I2C1 clock — 1.8 kΩ board pull-up — GPIO3 pull=High",
+      {"ALT0":"SCL1",       "ALT1":"SA2",   "ALT2":"LCD_HSYNC",  "ALT3":"SPI3_SCLK",   "ALT4":"RTS2",        "ALT5":"SCL3"}),
+    ( 6, None, "GND",    "GND",     "Ground",                                {}),
+    # ── GPIO4 — 1-Wire default ────────────────────────────────────────────────
+    ( 7,  4,   "GPIO4",  "ONEWIRE",
+      "GPIO4 pull=High — 1-Wire default (DS18B20)",
+      {"ALT0":"GPCLK0",     "ALT1":"SA1",   "ALT2":"DPI_D0",     "ALT3":"SPI4_CE0_N",  "ALT4":"TXD3",        "ALT5":"SDA3"}),
+    ( 8, 14,   "TXD0",   "UART",
+      "GPIO14 pull=Low — UART0 TX / UART1 TX",
+      {"ALT0":"TXD0",       "ALT1":"SD6",   "ALT2":"DPI_D10",    "ALT3":"SPI5_MOSI",   "ALT4":"CTS5",        "ALT5":"TXD1"}),
+    ( 9, None, "GND",    "GND",     "Ground",                                {}),
+    (10, 15,   "RXD0",   "UART",
+      "GPIO15 pull=Low — UART0 RX / UART1 RX",
+      {"ALT0":"RXD0",       "ALT1":"SD7",   "ALT2":"DPI_D11",    "ALT3":"SPI5_SCLK",   "ALT4":"RTS5",        "ALT5":"RXD1"}),
+    (11, 17,   "GPIO17", "GPIO",
+      "GPIO17 pull=Low — general I/O",
+      {"ALT0":"FL1",        "ALT1":"SD9",   "ALT2":"DPI_D13",    "ALT3":"RTS0",        "ALT4":"SPI1_CE1_N",  "ALT5":"RTS1"}),
+    (12, 18,   "PCM_CLK","PWM",
+      "GPIO18 pull=Low — HW PWM0 (ALT5) / PCM CLK (ALT0) / SPI1 CE0 (ALT4)",
+      {"ALT0":"PCM_CLK",    "ALT1":"SD10",  "ALT2":"DPI_D14",    "ALT3":"SPI6_CE0_N",  "ALT4":"SPI1_CE0_N",  "ALT5":"PWM0"}),
+    (13, 27,   "GPIO27", "GPIO",
+      "GPIO27 pull=Low — general I/O",
+      {"ALT0":"SD0_DAT3",   "ALT1":"TE1",   "ALT2":"DPI_D23",    "ALT3":"SD1_DAT3",    "ALT4":"ARM_TMS",     "ALT5":"SPI6_CE1_N"}),
+    (14, None, "GND",    "GND",     "Ground",                                {}),
+    (15, 22,   "GPIO22", "GPIO",
+      "GPIO22 pull=Low — general I/O",
+      {"ALT0":"SD0_CLK",    "ALT1":"SD14",  "ALT2":"DPI_D18",    "ALT3":"SD1_CLK",     "ALT4":"ARM_TRST",    "ALT5":"SDA6"}),
+    (16, 23,   "GPIO23", "GPIO",
+      "GPIO23 pull=Low — general I/O",
+      {"ALT0":"SD0_CMD",    "ALT1":"SD15",  "ALT2":"DPI_D19",    "ALT3":"SD1_CMD",     "ALT4":"ARM_RTCK",    "ALT5":"SCL6"}),
+    (17, None, "3V3",    "PWR33",   "3.3V power rail",                       {}),
+    (18, 24,   "GPIO24", "GPIO",
+      "GPIO24 pull=Low — general I/O",
+      {"ALT0":"SD0_DAT0",   "ALT1":"SD16",  "ALT2":"DPI_D20",    "ALT3":"SD1_DAT0",    "ALT4":"ARM_TDO",     "ALT5":"SPI3_CE1_N"}),
+    (19, 10,   "MOSI",   "SPI",
+      "GPIO10 pull=Low — SPI0 MOSI",
+      {"ALT0":"SPI0_MOSI",  "ALT1":"SD2",   "ALT2":"DPI_D6",     "ALT3":"",            "ALT4":"CTS4",        "ALT5":"SDA5"}),
+    (20, None, "GND",    "GND",     "Ground",                                {}),
+    (21,  9,   "MISO",   "SPI",
+      "GPIO9 pull=Low — SPI0 MISO",
+      {"ALT0":"SPI0_MISO",  "ALT1":"SD1",   "ALT2":"DPI_D5",     "ALT3":"",            "ALT4":"RXD4",        "ALT5":"SCL4"}),
+    (22, 25,   "GPIO25", "GPIO",
+      "GPIO25 pull=Low — general I/O",
+      {"ALT0":"SD0_DAT1",   "ALT1":"SD17",  "ALT2":"DPI_D21",    "ALT3":"SD1_DAT1",    "ALT4":"ARM_TCK",     "ALT5":"SPI4_CE1_N"}),
+    (23, 11,   "SCLK",   "SPI",
+      "GPIO11 pull=Low — SPI0 clock",
+      {"ALT0":"SPI0_SCLK",  "ALT1":"SD3",   "ALT2":"DPI_D7",     "ALT3":"",            "ALT4":"RTS4",        "ALT5":"SCL5"}),
+    (24,  8,   "CE0",    "SPI",
+      "GPIO8 pull=High — SPI0 chip-enable 0 (active LOW)",
+      {"ALT0":"SPI0_CE0_N", "ALT1":"SD0",   "ALT2":"DPI_D4",     "ALT3":"",            "ALT4":"TXD4",        "ALT5":"SDA4"}),
+    (25, None, "GND",    "GND",     "Ground",                                {}),
+    (26,  7,   "CE1",    "SPI",
+      "GPIO7 pull=High — SPI0 chip-enable 1 (active LOW)",
+      {"ALT0":"SPI0_CE1_N", "ALT1":"SWE_N", "ALT2":"DPI_D3",     "ALT3":"SPI4_SCLK",   "ALT4":"RTS3",        "ALT5":"SCL4"}),
+    # ── HAT ID pins — GPIO0/GPIO1 — reserved for EEPROM ──────────────────────
+    (27,  0,   "ID_SDA", "ID",
+      "GPIO0 pull=High — HAT EEPROM SDA / I2C0 — reserved",
+      {"ALT0":"SDA0",       "ALT1":"SA5",   "ALT2":"PCLK",       "ALT3":"SPI3_CE0_N",  "ALT4":"TXD2",        "ALT5":"SDA6"}),
+    (28,  1,   "ID_SCL", "ID",
+      "GPIO1 pull=High — HAT EEPROM SCL / I2C0 — reserved",
+      {"ALT0":"SCL0",       "ALT1":"SA4",   "ALT2":"DE",         "ALT3":"SPI3_MISO",   "ALT4":"RXD2",        "ALT5":"SCL6"}),
+    (29,  5,   "GPIO5",  "GPIO",
+      "GPIO5 pull=High — general I/O",
+      {"ALT0":"GPCLK1",     "ALT1":"SA0",   "ALT2":"DPI_D1",     "ALT3":"SPI4_MISO",   "ALT4":"RXD3",        "ALT5":"SCL3"}),
+    (30, None, "GND",    "GND",     "Ground",                                {}),
+    (31,  6,   "GPIO6",  "GPIO",
+      "GPIO6 pull=High — general I/O",
+      {"ALT0":"GPCLK2",     "ALT1":"SOE_N", "ALT2":"DPI_D2",     "ALT3":"SPI4_MOSI",   "ALT4":"CTS3",        "ALT5":"SDA4"}),
+    (32, 12,   "PWM0",   "PWM",
+      "GPIO12 pull=Low — HW PWM0 (ALT0) / SPI5 CE0 (ALT3)",
+      {"ALT0":"PWM0",       "ALT1":"SD4",   "ALT2":"DPI_D8",     "ALT3":"SPI5_CE0_N",  "ALT4":"TXD5",        "ALT5":"SDA5"}),
+    (33, 13,   "PWM1",   "PWM",
+      "GPIO13 pull=Low — HW PWM1 (ALT0) / SPI5 MISO (ALT3)",
+      {"ALT0":"PWM1",       "ALT1":"SD5",   "ALT2":"DPI_D9",     "ALT3":"SPI5_MISO",   "ALT4":"RXD5",        "ALT5":"SCL5"}),
+    (34, None, "GND",    "GND",     "Ground",                                {}),
+    (35, 19,   "PCM_FS", "SPI",
+      "GPIO19 pull=Low — SPI1 MISO (ALT4) / PCM FS (ALT0) / PWM1 (ALT5)",
+      {"ALT0":"PCM_FS",     "ALT1":"SD11",  "ALT2":"DPI_D15",    "ALT3":"SPI6_MISO",   "ALT4":"SPI1_MISO",   "ALT5":"PWM1"}),
+    (36, 16,   "GPIO16", "GPIO",
+      "GPIO16 pull=Low — SPI1 CE2 (ALT4) / CTS0 (ALT3)",
+      {"ALT0":"FL0",        "ALT1":"SD8",   "ALT2":"DPI_D12",    "ALT3":"CTS0",        "ALT4":"SPI1_CE2_N",  "ALT5":"CTS1"}),
+    (37, 26,   "GPIO26", "GPIO",
+      "GPIO26 pull=Low — general I/O",
+      {"ALT0":"SD0_DAT2",   "ALT1":"TE0",   "ALT2":"DPI_D22",    "ALT3":"SD1_DAT2",    "ALT4":"ARM_TDI",     "ALT5":"SPI5_CE1_N"}),
+    (38, 20,   "PCM_DIN","SPI",
+      "GPIO20 pull=Low — SPI1 MOSI (ALT4) / PCM DIN (ALT0) / GPCLK0 (ALT5)",
+      {"ALT0":"PCM_DIN",    "ALT1":"SD12",  "ALT2":"DPI_D16",    "ALT3":"SPI6_MOSI",   "ALT4":"SPI1_MOSI",   "ALT5":"GPCLK0"}),
+    (39, None, "GND",    "GND",     "Ground",                                {}),
+    (40, 21,   "PCM_DOUT","SPI",
+      "GPIO21 pull=Low — SPI1 SCLK (ALT4) / PCM DOUT (ALT0) / GPCLK1 (ALT5)",
+      {"ALT0":"PCM_DOUT",   "ALT1":"SD13",  "ALT2":"DPI_D17",    "ALT3":"SPI6_SCLK",   "ALT4":"SPI1_SCLK",   "ALT5":"GPCLK1"}),
+]
+
+_CW_DESC  = 30
+_CW_LABEL = 7
+_CW_TYPE  = 7
+
+def _pc(type_key: str, text: str) -> str:
+    return f"{PIN_COLORS.get(type_key, RESET)}{text}{RESET}"
+
+def _trunc(s: str, width: int) -> str:
+    return s[:width] if len(s) > width else s.ljust(width)
+
+def _bcm_to_phys(bcm: int) -> str:
+    for entry in PIN_MAP:
+        if entry[1] == bcm:
+            return str(entry[0])
+    return "?"
+
+def _bcm_to_entry(bcm: int):
+    for entry in PIN_MAP:
+        if entry[1] == bcm:
+            return entry
+    return None
+
+
+def gpio_reference():
+    W = _CW_DESC; L = _CW_LABEL; T = _CW_TYPE
+    total_w = 3 + 2 + 4 + 2 + L + 2 + T + 2 + W + 3 + W + 2 + T + 2 + L + 2 + 4 + 2 + 3
+    bar = "─" * total_w
+
+    print(f"\n{CYAN}╔══════════════════════════════════════════════════════════╗")
+    print(f"║     Raspberry Pi — 40-Pin GPIO Reference  v2.1           ║")
+    print(f"╚══════════════════════════════════════════════════════════╝{RESET}")
+    print(f"  {DIM}Pin 1 = top-left when USB ports face down{RESET}\n")
+
+    hdr_l = (f"{'PIN':>3}  {'BCM':>4}  {'LABEL':<{L}}  {'TYPE':<{T}}  {'DESCRIPTION':<{W}}")
+    hdr_r = (f"{'DESCRIPTION':<{W}}  {'TYPE':<{T}}  {'LABEL':<{L}}  {'BCM':>4}  {'PIN':>3}")
+    print(f"  {DIM}{hdr_l}   │   {hdr_r}{RESET}")
+    print(f"  {DIM}{bar}{RESET}")
+
+    for i in range(0, 40, 2):
+        lp = PIN_MAP[i]; rp = PIN_MAP[i + 1]
+        l_bcm = str(lp[1]) if lp[1] is not None else "—"
+        r_bcm = str(rp[1]) if rp[1] is not None else "—"
+        l_label = _trunc(lp[2], L); r_label = _trunc(rp[2], L)
+        l_type  = _trunc(lp[3], T); r_type  = _trunc(rp[3], T)
+        l_desc  = _trunc(lp[4], W); r_desc  = _trunc(rp[4], W)
+        left  = (f"{BOLD}{lp[0]:>3}{RESET}  {DIM}{l_bcm:>4}{RESET}  "
+                 f"{_pc(lp[3], l_label)}  {_pc(lp[3], l_type)}  {l_desc}")
+        right = (f"{r_desc}  {_pc(rp[3], r_type)}  {_pc(rp[3], r_label)}  "
+                 f"{DIM}{r_bcm:>4}{RESET}  {BOLD}{rp[0]:>3}{RESET}")
+        print(f"  {left}   {DIM}│{RESET}   {right}")
+
+    print(f"\n  {DIM}{bar}{RESET}")
+    legend = "  "
+    for key, label in [("PWR33","3.3V"),("PWR5","5V"),("GND","GND"),
+                        ("GPIO","GPIO"),("I2C","I2C"),("SPI","SPI"),
+                        ("UART","UART"),("PWM","PWM"),("ONEWIRE","1-Wire"),("ID","HAT-ID")]:
+        legend += _pc(key, f"■ {label}") + "  "
+    print(legend + "\n")
+
+
+def show_alt_functions():
+    """
+    Print Table 5 from the official RPi 4 datasheet verbatim.
+    Source: Raspberry Pi 4 Model B Datasheet  RP-008341-DS  Release 1.1  March 2024
+            Table 5: Raspberry Pi 4 GPIO Alternate Functions
+    Covers BCM2711 GPIO0-GPIO27 (all 28 user pins on the 40-pin header).
+    """
+    print(f"\n{CYAN}╔══════════════════════════════════════════════════════════════════════════════════╗")
+    print(f"║  Table 5 — Raspberry Pi 4 GPIO Alternate Functions   (BCM2711 / RPi4B DS)    ║")
+    print(f"║  Source: RP-008341-DS Release 1.1, March 2024  © Raspberry Pi (Trading) Ltd. ║")
+    print(f"╚══════════════════════════════════════════════════════════════════════════════════╝{RESET}")
+    print(f"  {DIM}All 28 user-accessible BCM2711 GPIOs, sorted by BCM number (GPIO0-GPIO27){RESET}")
+    print(f"  {DIM}Pull = default pull resistor at power-on (High=pull-up, Low=pull-down){RESET}\n")
+
+    gpio_entries = sorted(
+        [e for e in PIN_MAP if e[1] is not None and e[5]],
+        key=lambda e: e[1]
+    )
+
+    def _ca(s):
+        s = s or "—"
+        if not s or s == "—": return f"{DIM}—{RESET}"
+        if "TXD" in s or "RXD" in s or "CTS" in s or "RTS" in s or "UART" in s:
+            return f"{YELLOW}{s}{RESET}"
+        if "SPI"  in s: return f"{GREEN}{s}{RESET}"
+        if "SDA"  in s or "SCL" in s or "I2C" in s: return f"{CYAN}{s}{RESET}"
+        if "PWM"  in s: return f"{MAGENTA}{s}{RESET}"
+        if "PCM"  in s: return f"{YELLOW}{s}{RESET}"
+        if "ARM"  in s: return f"{RED}{s}{RESET}"
+        if "GPCLK" in s or "CLK" in s or "PCLK" in s: return f"{WHITE}{s}{RESET}"
+        if "DPI"  in s: return f"{DIM}{s}{RESET}"
+        return f"{DIM}{s}{RESET}"
+
+    print(f"  {DIM}{'GPIO':<8} {'Pull':<6} {'Phys':<5} {'ALT0':<16} {'ALT1':<13} {'ALT2':<11} {'ALT3':<16} {'ALT4':<16} {'ALT5'}{RESET}")
+    print(f"  {DIM}{chr(8212)*118}{RESET}")
+
+    for phys, bcm, label, ptype, desc, alts in gpio_entries:
+        pull = "High" if "pull=High" in desc else "Low"
+        pc   = GREEN if pull == "High" else DIM
+        a0 = alts.get("ALT0","") or "—"
+        a1 = alts.get("ALT1","") or "—"
+        a2 = alts.get("ALT2","") or "—"
+        a3 = alts.get("ALT3","") or "—"
+        a4 = alts.get("ALT4","") or "—"
+        a5 = alts.get("ALT5","") or "—"
+        ps = _pc(ptype, f"GPIO{bcm}")
+        print(f"  {ps:<20}  {pc}{pull:<6}{RESET}  {DIM}P{phys:<4}{RESET}"
+              f"  {_ca(a0):<26}  {_ca(a1):<23}  {_ca(a2):<21}"
+              f"  {_ca(a3):<26}  {_ca(a4):<26}  {_ca(a5)}")
+
+    print(f"\n  {DIM}{chr(8212)*118}{RESET}")
+    print(f"\n  {BOLD}BCM2711 Pi 4 Peripheral Summary:{RESET}")
+    perip = [
+        ("SPI",   GREEN,   "SPI0-SPI6  (7 buses — SPI0 header pins, SPI1-6 via ALT mux)"),
+        ("I2C",   CYAN,    "I2C0-I2C6  (7 buses — I2C0 HAT EEPROM, I2C1 header pins 3+5)"),
+        ("UART",  YELLOW,  "UART0-UART5 (6 UARTs — UART0 & UART1 console-capable)"),
+        ("PWM",   MAGENTA, "PWM0 & PWM1  (2 HW channels — GPIO12/18=PWM0, GPIO13/19=PWM1)"),
+        ("PCM",   YELLOW,  "PCM CLK/FS/DIN/DOUT  (I2S digital audio interface)"),
+        ("GPCLK", WHITE,   "GPCLK0/1/2  (3 general-purpose clock outputs)"),
+        ("DPI",   DIM,     "DPI D0-D23  (24-bit parallel RGB display — consumes many pins)"),
+        ("ARM",   RED,     "ARM JTAG  (TRST/RTCK/TDO/TCK/TDI/TMS — hardware debug only)"),
+    ]
+    for name, color, note in perip:
+        print(f"    {color}{name:<7}{RESET}  {note}")
+    print(f"\n  {YELLOW}Colour key:{RESET}  "
+          f"{YELLOW}UART/PCM{RESET}  {GREEN}SPI{RESET}  {CYAN}I2C{RESET}  "
+          f"{MAGENTA}PWM{RESET}  {WHITE}GPCLK{RESET}  {RED}ARM{RESET}  "
+          f"{DIM}DPI/SD/SA{RESET}\n")
+
+
+def show_pin_alt(phys_or_bcm: int, by_bcm: bool = True):
+    """Show alternate functions for a single pin."""
+    entry = None
+    if by_bcm:
+        entry = _bcm_to_entry(phys_or_bcm)
+    else:
+        for e in PIN_MAP:
+            if e[0] == phys_or_bcm:
+                entry = e; break
+    if not entry:
+        warn(f"Pin not found"); return
+    phys, bcm, label, ptype, desc, alts = entry
+    print(f"\n  {BOLD}{_pc(ptype, label)}{RESET}  Physical Pin {phys}  BCM {bcm}")
+    print(f"  {DIM}{desc}{RESET}\n")
+    print(f"  {'Mode':<8} {'Function'}")
+    print(f"  {'─'*40}")
+    print(f"  {'PRIMARY':<8} {_pc(ptype, label)} — {desc}")
+    for mode in ["ALT0","ALT1","ALT2","ALT3","ALT4","ALT5"]:
+        fn = alts.get(mode, "") or "—"
+        print(f"  {DIM}{mode:<8}{RESET} {fn}")
+    print()
+
+
+def gpio_reference_search():
+    print(f"\n{CYAN}=== PIN SEARCH ==={RESET}")
+    query = _input("  BCM number, label, keyword or alt function: ").strip().lower()
+    if not query: return
+    found = []
+    for entry in PIN_MAP:
+        phys, bcm, label, ptype, desc, alts = entry
+        searchable = f"{bcm} {label} {ptype} {desc} " + " ".join(alts.values())
+        if query in searchable.lower():
+            found.append(entry)
+    if not found:
+        warn(f"No pins matched '{query}'"); return
+    print()
+    for phys, bcm, label, ptype, desc, alts in found:
+        bcm_str = f"BCM {bcm}" if bcm is not None else "no BCM"
+        print(f"  {BOLD}Pin {phys:>2}{RESET}  {_pc(ptype, f'{label:<9}')}  "
+              f"{DIM}{bcm_str:>7}{RESET}  {desc}")
+        if alts:
+            alt_str = "  ".join(f"{k}:{v}" for k,v in alts.items() if v)
+            print(f"         {DIM}Alts: {alt_str}{RESET}")
+        if bcm is not None:
+            print(f"         {DIM}Python: GPIO.setup({bcm}, GPIO.OUT){RESET}")
+    print()
+
+
+def gpio_reference_by_type():
+    print(f"\n{CYAN}=== FILTER BY TYPE ==={RESET}")
+    print("  gpio  i2c  spi  uart  pwm  pwr  gnd  id  1wire  (ENTER = all)")
+    choice = _input("  Type: ").strip().upper()
+    if choice == "1WIRE": choice = "ONEWIRE"
+    type_map = {"PWR": ["PWR33", "PWR5"], "": None}
+    filter_types = type_map.get(choice, [choice])
+    print()
+    for phys, bcm, label, ptype, desc, alts in PIN_MAP:
+        if filter_types and ptype not in filter_types:
+            continue
+        bcm_str = f"BCM{bcm:>3}" if bcm is not None else "      "
+        print(f"  {BOLD}Pin {phys:>2}{RESET}  {_pc(ptype, f'{label:<9}')}  "
+              f"{DIM}{bcm_str}{RESET}  {desc}")
+    print()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GPIO BACKEND LAYER
+# ══════════════════════════════════════════════════════════════════════════════
 
 class _GPIOAdapter:
     name      = "none"
     available = False
-    def setup(self, pin, mode):      pass
-    def output(self, pin, val):      pass
-    def input(self, pin) -> int:     return 0
-    def pwm(self, pin, freq_hz=1000): return None
-    def _release_pins(self, *pins):  pass   # lightweight per-test cleanup
-    def cleanup(self):               pass   # called only on program exit
+    def setup(self, pin, mode):          pass
+    def output(self, pin, val):          pass
+    def input(self, pin) -> int:         return 0
+    def pwm(self, pin, freq_hz=1000):    return None
+    def _release_pins(self, *pins):      pass
+    def cleanup(self):                   pass
 
 
-# ── Backend: RPi.GPIO ──────────────────────────────────────────────────────────
 class _RPiGPIOAdapter(_GPIOAdapter):
     name = "RPi.GPIO"
-
     def __init__(self):
         import RPi.GPIO as _G
         self._G = _G
-        self._G.setmode(self._G.BCM)   # set ONCE — never cleared mid-session
+        self._G.setmode(self._G.BCM)
         self._G.setwarnings(False)
         self.available = True
 
     def _ensure_mode(self):
-        """Re-apply BCM mode if a previous cleanup() wiped it."""
-        try:
-            self._G.setmode(self._G.BCM)
-        except Exception:
-            pass  # already set — RPi.GPIO raises if you set same mode twice
+        try: self._G.setmode(self._G.BCM)
+        except Exception: pass
 
     def setup(self, pin, mode):
         self._ensure_mode()
         m = self._G.OUT if mode == "out" else self._G.IN
         self._G.setup(pin, m)
 
-    def output(self, pin, val):
+    def setup_pull(self, pin, pull):
+        """pull: 'up', 'down', 'none'"""
         self._ensure_mode()
-        self._G.output(pin, val)
+        pud = {"up": self._G.PUD_UP, "down": self._G.PUD_DOWN, "none": self._G.PUD_OFF}
+        self._G.setup(pin, self._G.IN, pull_up_down=pud.get(pull, self._G.PUD_OFF))
+
+    def output(self, pin, val):
+        self._ensure_mode(); self._G.output(pin, val)
 
     def input(self, pin):
-        self._ensure_mode()
-        return self._G.input(pin)
+        self._ensure_mode(); return self._G.input(pin)
 
     def pwm(self, pin, freq_hz=1000):
         self._ensure_mode()
@@ -174,36 +494,22 @@ class _RPiGPIOAdapter(_GPIOAdapter):
         e = self._G.RISING if edge == "rising" else self._G.FALLING
         self._G.add_event_detect(pin, e, callback=callback)
 
+    def gpio_function(self, pin):
+        return self._G.gpio_function(pin)
+
     def _release_pins(self, *pins):
-        """
-        Reset only explicitly requested pins back to safe INPUT state.
-        Uses GPIO.setup(pin, IN) instead of GPIO.cleanup(pin) — cleanup()
-        wipes ALL pins AND the BCM mode, even pins we didn't touch.
-        """
         self._ensure_mode()
         for p in pins:
-            try:
-                self._G.setup(p, self._G.IN)
-            except Exception:
-                pass
-        # Mode stays set — no cleanup() call here
+            try: self._G.setup(p, self._G.IN)
+            except Exception: pass
 
     def cleanup(self):
-        """Full cleanup — only called at program exit."""
-        try:
-            self._G.cleanup()
-        except Exception:
-            pass
+        try: self._G.cleanup()
+        except Exception: pass
 
 
-# ── Backend: pigpio ────────────────────────────────────────────────────────────
 class _PigpioAdapter(_GPIOAdapter):
-    """
-    pigpio: hardware-timed PWM, native servo pulses, remote GPIO.
-    Requires: pip install pigpio  +  sudo systemctl start pigpiod
-    """
     name = "pigpio"
-
     def __init__(self):
         import pigpio as _pg
         self._pg = _pg
@@ -215,6 +521,10 @@ class _PigpioAdapter(_GPIOAdapter):
     def setup(self, pin, mode):
         m = self._pg.OUTPUT if mode == "out" else self._pg.INPUT
         self._pi.set_mode(pin, m)
+
+    def setup_pull(self, pin, pull):
+        pud = {"up": self._pg.PUD_UP, "down": self._pg.PUD_DOWN, "none": self._pg.PUD_OFF}
+        self._pi.set_pull_up_down(pin, pud.get(pull, self._pg.PUD_OFF))
 
     def output(self, pin, val): self._pi.write(pin, val)
     def input(self, pin):       return self._pi.read(pin)
@@ -234,18 +544,12 @@ class _PigpioAdapter(_GPIOAdapter):
     def servo_pulse(self, pin, pulse_us):
         self._pi.set_servo_pulsewidth(pin, pulse_us)
 
-    def _release_pins(self, *pins): pass   # pigpio has no per-pin cleanup
+    def _release_pins(self, *pins): pass
     def cleanup(self): self._pi.stop()
 
 
-# ── Backend: lgpio ─────────────────────────────────────────────────────────────
 class _LGpioAdapter(_GPIOAdapter):
-    """
-    lgpio: modern replacement for RPi.GPIO, works on Pi 5.
-    Requires: pip install lgpio
-    """
     name = "lgpio"
-
     def __init__(self):
         import lgpio as _lg
         self._lg = _lg
@@ -253,10 +557,12 @@ class _LGpioAdapter(_GPIOAdapter):
         self.available = True
 
     def setup(self, pin, mode):
-        if mode == "out":
-            self._lg.gpio_claim_output(self._h, pin)
-        else:
-            self._lg.gpio_claim_input(self._h, pin)
+        if mode == "out": self._lg.gpio_claim_output(self._h, pin)
+        else:             self._lg.gpio_claim_input(self._h, pin)
+
+    def setup_pull(self, pin, pull):
+        flags = {"up": self._lg.SET_PULL_UP, "down": self._lg.SET_PULL_DOWN, "none": 0}
+        self._lg.gpio_claim_input(self._h, pin, flags.get(pull, 0))
 
     def output(self, pin, val): self._lg.gpio_write(self._h, pin, val)
     def input(self, pin):       return self._lg.gpio_read(self._h, pin)
@@ -264,9 +570,9 @@ class _LGpioAdapter(_GPIOAdapter):
     def pwm(self, pin, freq_hz=1000):
         lg = self._lg; h = self._h
         class _LGpioPWM:
-            def start(self, dc):          lg.tx_pwm(h, pin, freq_hz, dc)
+            def start(self, dc):           lg.tx_pwm(h, pin, freq_hz, dc)
             def ChangeDutyCycle(self, dc): lg.tx_pwm(h, pin, freq_hz, dc)
-            def stop(self):               lg.tx_pwm(h, pin, freq_hz, 0)
+            def stop(self):                lg.tx_pwm(h, pin, freq_hz, 0)
         return _LGpioPWM()
 
     def _release_pins(self, *pins):
@@ -277,67 +583,49 @@ class _LGpioAdapter(_GPIOAdapter):
     def cleanup(self): self._lg.gpiochip_close(self._h)
 
 
-# ── Backend: gpiod ─────────────────────────────────────────────────────────────
 class _GpiodAdapter(_GPIOAdapter):
-    """
-    python-gpiod: kernel character device, no root needed.
-    Requires: pip install gpiod  (libgpiod >= 2.x)
-    Note: no hardware PWM — software PWM via threading.
-    """
     name = "gpiod"
-
     def __init__(self):
         import gpiod as _gd
-        self._gd    = _gd
-        self._chip  = _gd.Chip("/dev/gpiochip0")
-        self._lines = {}
-        self.available = True
+        self._gd = _gd; self._chip = _gd.Chip("/dev/gpiochip0")
+        self._lines = {}; self.available = True
 
     def _line(self, pin, mode):
         key = (pin, mode)
         if key not in self._lines:
             line = self._chip.get_line(pin)
             if mode == "out":
-                line.request(consumer="rpi_test",
-                             type=self._gd.LINE_REQ_DIR_OUT)
+                line.request(consumer="rpi_test", type=self._gd.LINE_REQ_DIR_OUT)
             else:
-                line.request(consumer="rpi_test",
-                             type=self._gd.LINE_REQ_DIR_IN)
+                line.request(consumer="rpi_test", type=self._gd.LINE_REQ_DIR_IN)
             self._lines[key] = line
         return self._lines[key]
 
     def setup(self, pin, mode): self._line(pin, mode)
+    def setup_pull(self, pin, pull): self.setup(pin, "in")  # gpiod v1 limited pull support
     def output(self, pin, val): self._line(pin, "out").set_value(val)
     def input(self, pin):       return self._line(pin, "in").get_value()
 
     def pwm(self, pin, freq_hz=1000):
-        self.setup(pin, "out")
-        adapter = self
+        self.setup(pin, "out"); adapter = self
         class _SoftPWM:
-            def __init__(self):
-                self._dc = 0; self._running = False; self._t = None
+            def __init__(self): self._dc=0; self._running=False; self._t=None
             def _loop(self):
-                period = 1.0 / freq_hz
+                period = 1.0/freq_hz
                 while self._running:
-                    if self._dc > 0:
-                        adapter.output(pin, 1)
-                        time.sleep(period * self._dc / 100)
-                    if self._dc < 100:
-                        adapter.output(pin, 0)
-                        time.sleep(period * (100 - self._dc) / 100)
+                    if self._dc > 0: adapter.output(pin,1); time.sleep(period*self._dc/100)
+                    if self._dc < 100: adapter.output(pin,0); time.sleep(period*(100-self._dc)/100)
             def start(self, dc):
-                self._dc = dc; self._running = True
-                self._t = threading.Thread(target=self._loop, daemon=True)
-                self._t.start()
-            def ChangeDutyCycle(self, dc): self._dc = dc
-            def stop(self):
-                self._running = False; adapter.output(pin, 0)
+                self._dc=dc; self._running=True
+                self._t=threading.Thread(target=self._loop, daemon=True); self._t.start()
+            def ChangeDutyCycle(self, dc): self._dc=dc
+            def stop(self): self._running=False; adapter.output(pin,0)
         return _SoftPWM()
 
     def _release_pins(self, *pins):
         for p in pins:
-            for mode in ("in", "out"):
-                key = (p, mode)
+            for mode in ("in","out"):
+                key=(p,mode)
                 if key in self._lines:
                     try: self._lines.pop(key).release()
                     except Exception: pass
@@ -349,49 +637,44 @@ class _GpiodAdapter(_GPIOAdapter):
         self._chip.close()
 
 
-# ── Backend: gpiozero ──────────────────────────────────────────────────────────
 class _GPIOZeroAdapter(_GPIOAdapter):
-    """
-    gpiozero: high-level library, good for reading.
-    Requires: pip install gpiozero
-    """
     name = "gpiozero"
-
     def __init__(self):
         from gpiozero import Button, LED
-        self._Button  = Button
-        self._LED     = LED
-        self._devices = {}
-        self.available = True
+        self._Button=Button; self._LED=LED; self._devices={}; self.available=True
 
-    def setup(self, pin, mode): self._devices[(pin, mode)] = mode
+    def setup(self, pin, mode): self._devices[(pin,mode)] = mode
+
+    def setup_pull(self, pin, pull):
+        from gpiozero import Button
+        pu = True if pull=="up" else False if pull=="down" else None
+        self._devices[(pin,"in")] = Button(pin, pull_up=pu)
 
     def output(self, pin, val):
-        key = (pin, "out")
-        if key not in self._devices or not hasattr(self._devices[key], "on"):
-            self._devices[key] = self._LED(pin)
+        key=(pin,"out")
+        if key not in self._devices or not hasattr(self._devices[key],"on"):
+            self._devices[key]=self._LED(pin)
         self._devices[key].on() if val else self._devices[key].off()
 
     def input(self, pin):
-        key = (pin, "in")
-        if key not in self._devices or not hasattr(self._devices[key], "is_pressed"):
-            self._devices[key] = self._Button(pin, pull_up=False)
+        key=(pin,"in")
+        if key not in self._devices or not hasattr(self._devices[key],"is_pressed"):
+            self._devices[key]=self._Button(pin, pull_up=False)
         return int(self._devices[key].is_pressed)
 
     def pwm(self, pin, freq_hz=1000):
         from gpiozero import PWMLED
-        dev = PWMLED(pin)
-        self._devices[(pin, "pwm")] = dev
+        dev=PWMLED(pin); self._devices[(pin,"pwm")]=dev
         class _GZeroPWM:
-            def start(self, dc):           dev.value = dc / 100
-            def ChangeDutyCycle(self, dc): dev.value = dc / 100
-            def stop(self):                dev.value = 0
+            def start(self, dc):           dev.value=dc/100
+            def ChangeDutyCycle(self, dc): dev.value=dc/100
+            def stop(self):                dev.value=0
         return _GZeroPWM()
 
     def _release_pins(self, *pins):
         for p in pins:
-            for mode in ("in", "out", "pwm"):
-                key = (p, mode)
+            for mode in ("in","out","pwm"):
+                key=(p,mode)
                 if key in self._devices:
                     try: self._devices.pop(key).close()
                     except Exception: pass
@@ -402,8 +685,22 @@ class _GPIOZeroAdapter(_GPIOAdapter):
             except Exception: pass
 
 
-# ── Auto-select best available backend ─────────────────────────────────────────
+def _try_start_pigpiod():
+    """Attempt to auto-start pigpiod if not running."""
+    try:
+        result = subprocess.run(["systemctl","is-active","pigpiod"],
+                                capture_output=True, text=True)
+        if result.stdout.strip() != "active":
+            warn("pigpiod not running — attempting auto-start…")
+            subprocess.run(["sudo","systemctl","start","pigpiod"], check=True)
+            time.sleep(1.5)
+            ok("pigpiod started")
+    except Exception:
+        pass
+
 def _pick_backend(prefer: str = None) -> _GPIOAdapter:
+    if prefer == "pigpio":
+        _try_start_pigpiod()
     order = [
         ("rpigpio",  _RPiGPIOAdapter),
         ("pigpio",   _PigpioAdapter),
@@ -412,8 +709,8 @@ def _pick_backend(prefer: str = None) -> _GPIOAdapter:
         ("gpiozero", _GPIOZeroAdapter),
     ]
     if prefer:
-        order = [(k, v) for k, v in order if k == prefer] + \
-                [(k, v) for k, v in order if k != prefer]
+        order = [(k,v) for k,v in order if k==prefer] + \
+                [(k,v) for k,v in order if k!=prefer]
     for name, cls in order:
         try:
             adapter = cls()
@@ -427,169 +724,6 @@ def _pick_backend(prefer: str = None) -> _GPIOAdapter:
 
 GPIO_ADAPTER = _pick_backend(os.environ.get("RPI_GPIO_BACKEND"))
 HAS_GPIO     = GPIO_ADAPTER.available
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 40-PIN REFERENCE TABLE
-# ══════════════════════════════════════════════════════════════════════════════
-PIN_MAP = [
-    ( 1, None, "3V3",    "PWR33", "3.3V power (~50mA max)"),
-    ( 2, None, "5V",     "PWR5",  "5V rail (USB/barrel)"),
-    ( 3,  2,   "SDA1",   "I2C",   "I2C1 data  1.8kΩ pull-up"),
-    ( 4, None, "5V",     "PWR5",  "5V power rail"),
-    ( 5,  3,   "SCL1",   "I2C",   "I2C1 clock 1.8kΩ pull-up"),
-    ( 6, None, "GND",    "GND",   "Ground"),
-    ( 7,  4,   "GPIO4",  "GPIO",  "GPIO / 1-Wire (DS18B20)"),
-    ( 8, 14,   "TXD0",   "UART",  "UART TX (disable console first)"),
-    ( 9, None, "GND",    "GND",   "Ground"),
-    (10, 15,   "RXD0",   "UART",  "UART RX"),
-    (11, 17,   "GPIO17", "GPIO",  "General-purpose I/O"),
-    (12, 18,   "PWM0",   "PWM",   "HW PWM ch0 / PCM CLK"),
-    (13, 27,   "GPIO27", "GPIO",  "General-purpose I/O"),
-    (14, None, "GND",    "GND",   "Ground"),
-    (15, 22,   "GPIO22", "GPIO",  "General-purpose I/O"),
-    (16, 23,   "GPIO23", "GPIO",  "General-purpose I/O"),
-    (17, None, "3V3",    "PWR33", "3.3V power rail"),
-    (18, 24,   "GPIO24", "GPIO",  "General-purpose I/O"),
-    (19, 10,   "MOSI",   "SPI",   "SPI0 MOSI"),
-    (20, None, "GND",    "GND",   "Ground"),
-    (21,  9,   "MISO",   "SPI",   "SPI0 MISO"),
-    (22, 25,   "GPIO25", "GPIO",  "General-purpose I/O"),
-    (23, 11,   "SCLK",   "SPI",   "SPI0 clock"),
-    (24,  8,   "CE0",    "SPI",   "SPI0 chip enable 0 (active LOW)"),
-    (25, None, "GND",    "GND",   "Ground"),
-    (26,  7,   "CE1",    "SPI",   "SPI0 chip enable 1 (active LOW)"),
-    (27, None, "ID_SD",  "ID",    "HAT EEPROM SDA — reserved"),
-    (28, None, "ID_SC",  "ID",    "HAT EEPROM SCL — reserved"),
-    (29,  5,   "GPIO5",  "GPIO",  "GPIO — pull-up on boot"),
-    (30, None, "GND",    "GND",   "Ground"),
-    (31,  6,   "GPIO6",  "GPIO",  "GPIO — pull-up on boot"),
-    (32, 12,   "PWM0",   "PWM",   "HW PWM ch0 (alt pin)"),
-    (33, 13,   "PWM1",   "PWM",   "HW PWM ch1"),
-    (34, None, "GND",    "GND",   "Ground"),
-    (35, 19,   "MISO1",  "SPI",   "SPI1 MISO / PCM FS"),
-    (36, 16,   "CE0_1",  "SPI",   "SPI1 chip enable 0"),
-    (37, 26,   "GPIO26", "GPIO",  "General-purpose I/O"),
-    (38, 20,   "MOSI1",  "SPI",   "SPI1 MOSI / PCM DIN"),
-    (39, None, "GND",    "GND",   "Ground"),
-    (40, 21,   "SCLK1",  "SPI",   "SPI1 clock / PCM DOUT"),
-]
-
-# Column widths — kept short so descriptions never overflow
-_CW_DESC  = 28   # description column
-_CW_LABEL = 7    # label column
-_CW_TYPE  = 5    # type column
-
-
-def _pc(type_key: str, text: str) -> str:
-    """Wrap text in the pin-type ANSI colour."""
-    return f"{PIN_COLORS.get(type_key, RESET)}{text}{RESET}"
-
-def _trunc(s: str, width: int) -> str:
-    """Truncate string to exactly `width` printable chars."""
-    return s[:width] if len(s) > width else s.ljust(width)
-
-def _bcm_to_phys(bcm: int) -> str:
-    for phys, b, *_ in PIN_MAP:
-        if b == bcm:
-            return str(phys)
-    return "?"
-
-
-def gpio_reference():
-    W = _CW_DESC
-    L = _CW_LABEL
-    T = _CW_TYPE
-
-    total_w = 3 + 2 + 4 + 2 + L + 2 + T + 2 + W + 3 + W + 2 + T + 2 + L + 2 + 4 + 2 + 3
-    bar = "─" * total_w
-
-    print(f"\n{CYAN}╔══════════════════════════════════════════════════════════╗")
-    print(f"║       Raspberry Pi — 40-Pin GPIO Reference               ║")
-    print(f"╚══════════════════════════════════════════════════════════╝{RESET}")
-    print(f"  {DIM}Pin 1 = top-left when USB ports face down{RESET}\n")
-
-    # Header (plain, no colour codes so widths are predictable)
-    hdr_l = (f"{'PIN':>3}  {'BCM':>4}  "
-             f"{'LABEL':<{L}}  {'TYPE':<{T}}  {'DESCRIPTION':<{W}}")
-    hdr_r = (f"{'DESCRIPTION':<{W}}  {'TYPE':<{T}}  "
-             f"{'LABEL':<{L}}  {'BCM':>4}  {'PIN':>3}")
-    print(f"  {DIM}{hdr_l}   │   {hdr_r}{RESET}")
-    print(f"  {DIM}{bar}{RESET}")
-
-    for i in range(0, 40, 2):
-        lp = PIN_MAP[i]
-        rp = PIN_MAP[i + 1]
-
-        l_bcm = str(lp[1]) if lp[1] is not None else "—"
-        r_bcm = str(rp[1]) if rp[1] is not None else "—"
-
-        l_label = _trunc(lp[2], L)
-        r_label = _trunc(rp[2], L)
-        l_type  = _trunc(lp[3], T)
-        r_type  = _trunc(rp[3], T)
-        l_desc  = _trunc(lp[4], W)
-        r_desc  = _trunc(rp[4], W)
-
-        left = (f"{BOLD}{lp[0]:>3}{RESET}  "
-                f"{DIM}{l_bcm:>4}{RESET}  "
-                f"{_pc(lp[3], l_label)}  "
-                f"{_pc(lp[3], l_type)}  "
-                f"{l_desc}")
-
-        right = (f"{r_desc}  "
-                 f"{_pc(rp[3], r_type)}  "
-                 f"{_pc(rp[3], r_label)}  "
-                 f"{DIM}{r_bcm:>4}{RESET}  "
-                 f"{BOLD}{rp[0]:>3}{RESET}")
-
-        print(f"  {left}   {DIM}│{RESET}   {right}")
-
-    print(f"\n  {DIM}{bar}{RESET}")
-    legend = "  "
-    for key, label in [("PWR33","3.3V"),("PWR5","5V"),("GND","GND"),
-                        ("GPIO","GPIO"),("I2C","I2C"),("SPI","SPI"),
-                        ("UART","UART"),("PWM","PWM"),("ID","HAT-ID")]:
-        legend += _pc(key, f"■ {label}") + "  "
-    print(legend + "\n")
-
-
-def gpio_reference_search():
-    print(f"\n{CYAN}=== PIN SEARCH ==={RESET}")
-    query = _input("  BCM number, label or keyword: ").strip().lower()
-    if not query:
-        return
-    found = [p for p in PIN_MAP
-             if query in f"{p[1]} {p[2]} {p[3]} {p[4]}".lower()]
-    if not found:
-        warn(f"No pins matched '{query}'"); return
-
-    print()
-    for phys, bcm, label, ptype, desc in found:
-        bcm_str = f"BCM {bcm}" if bcm is not None else "no BCM"
-        print(f"  {BOLD}Pin {phys:>2}{RESET}  {_pc(ptype, f'{label:<8}')}  "
-              f"{DIM}{bcm_str:>7}{RESET}  {desc}")
-        if bcm is not None:
-            print(f"         {DIM}Python:  GPIO.setup({bcm}, GPIO.OUT) "
-                  f"/ GPIO.setup({bcm}, GPIO.IN){RESET}")
-    print()
-
-
-def gpio_reference_by_type():
-    print(f"\n{CYAN}=== FILTER BY TYPE ==={RESET}")
-    print("  gpio  i2c  spi  uart  pwm  pwr  gnd  id  (ENTER = all)")
-    choice = _input("  Type: ").strip().upper()
-    type_map = {"PWR": ["PWR33", "PWR5"], "": None}
-    filter_types = type_map.get(choice, [choice])
-
-    print()
-    for phys, bcm, label, ptype, desc in PIN_MAP:
-        if filter_types and ptype not in filter_types:
-            continue
-        bcm_str = f"BCM{bcm:>3}" if bcm is not None else "      "
-        print(f"  {BOLD}Pin {phys:>2}{RESET}  {_pc(ptype, f'{label:<8}')}  "
-              f"{DIM}{bcm_str}{RESET}  {desc}")
-    print()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -613,6 +747,7 @@ def check_deps(silent: bool = False) -> bool:
     sys_tools = [
         ("i2cdetect", "which i2cdetect", "sudo apt install i2c-tools"),
         ("vcgencmd",  "which vcgencmd",  "sudo apt install libraspberrypi-bin"),
+        ("gpio",      "which gpio",      "sudo apt install wiringpi"),
     ]
 
     all_ok = True
@@ -638,7 +773,7 @@ def check_deps(silent: bool = False) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SYSTEM INFO
+# SYSTEM INFO (enhanced with network)
 # ══════════════════════════════════════════════════════════════════════════════
 def system_info():
     print(f"\n{CYAN}=== SYSTEM INFO ==={RESET}")
@@ -650,57 +785,161 @@ def system_info():
 
     def _cmd(cmd, default="unavailable"):
         try:
-            return subprocess.check_output(
-                cmd, shell=True, stderr=subprocess.DEVNULL, text=True).strip()
+            return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL,
+                                           text=True).strip()
         except Exception: return default
 
-    model    = _read("/proc/device-tree/model").replace("\x00", "")
+    model    = _read("/proc/device-tree/model").replace("\x00","")
+    revision = _cmd("cat /proc/cpuinfo | grep Revision | head -1 | awk '{print $3}'")
     serial   = next((l.split(":")[1].strip()
                      for l in _read("/proc/cpuinfo").splitlines()
                      if l.startswith("Serial")), "unknown")
     mem_kb   = _read("/proc/meminfo").splitlines()[0].split()[1]
-    temp     = _cmd("vcgencmd measure_temp").replace("temp=", "")
+    temp     = _cmd("vcgencmd measure_temp").replace("temp=","")
     throttle = _cmd("vcgencmd get_throttled")
+    volt     = _cmd("vcgencmd measure_volts core").replace("volt=","")
+    freq_arm = _cmd("vcgencmd measure_clock arm").replace("frequency(48)=","")
     kernel   = _cmd("uname -r")
     uptime   = _cmd("uptime -p")
     os_name  = _cmd("cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2").strip('"')
+    hostname = socket.gethostname()
+    ips      = _cmd("hostname -I").strip()
+    wifi_ssid= _cmd("iwgetid -r 2>/dev/null || echo 'N/A'")
+    mac      = _cmd("cat /sys/class/net/wlan0/address 2>/dev/null || echo 'N/A'")
+    eth_mac  = _cmd("cat /sys/class/net/eth0/address 2>/dev/null || echo 'N/A'")
+    disk     = _cmd("df -h / | tail -1 | awk '{print $3\"/\"$2\" (\"$5\" used)\"}'")
+    cpu_load = _cmd("top -bn1 | grep 'Cpu(s)' | awk '{print $2+$4\"%\"}'")
+    swap     = _cmd("free -h | grep Swap | awk '{print $3\"/\"$2}'")
 
-    rows = [
-        ("Model",      model),
-        ("Serial",     serial),
-        ("OS",         os_name),
-        ("Kernel",     kernel),
-        ("Uptime",     uptime),
-        ("RAM",        f"{int(mem_kb)//1024} MB"),
-        ("CPU temp",   temp),
-        ("Throttled",  throttle),
-        ("GPIO back",  GPIO_ADAPTER.name),
+    # Throttle decode
+    throttle_codes = {
+        "0x1":    "Under-voltage detected",
+        "0x2":    "Arm freq capped",
+        "0x4":    "Currently throttled",
+        "0x8":    "Soft temp limit active",
+        "0x10000":"Under-voltage occurred",
+        "0x20000":"Arm freq capping occurred",
+        "0x40000":"Throttling occurred",
+        "0x80000":"Soft temp limit occurred",
+    }
+    throttle_hex = throttle.replace("throttled=","")
+    throttle_msg = ""
+    try:
+        tv = int(throttle_hex, 16)
+        flags = [msg for mask_s, msg in throttle_codes.items()
+                 if tv & int(mask_s, 16)]
+        throttle_msg = ", ".join(flags) if flags else "OK (0x0)"
+    except Exception:
+        throttle_msg = throttle_hex
+
+    # Convert ARM freq to MHz
+    try: freq_str = f"{int(freq_arm)//1_000_000} MHz"
+    except Exception: freq_str = freq_arm
+
+    sections = [
+        ("── Hardware ──", [
+            ("Model",       model),
+            ("Revision",    revision),
+            ("Serial",      serial),
+        ]),
+        ("── Software ──", [
+            ("OS",          os_name),
+            ("Kernel",      kernel),
+            ("Uptime",      uptime),
+        ]),
+        ("── Resources ──", [
+            ("RAM",         f"{int(mem_kb)//1024} MB"),
+            ("Swap",        swap),
+            ("Disk",        disk),
+            ("CPU load",    cpu_load),
+            ("ARM freq",    freq_str),
+        ]),
+        ("── Power & Thermal ──", [
+            ("CPU temp",    temp),
+            ("Core volt",   volt),
+            ("Throttle",    throttle_msg),
+        ]),
+        ("── Network ──", [
+            ("Hostname",    hostname),
+            ("IP addrs",    ips),
+            ("WiFi SSID",   wifi_ssid),
+            ("WiFi MAC",    mac),
+            ("Eth MAC",     eth_mac),
+        ]),
+        ("── GPIO ──", [
+            ("Backend",     GPIO_ADAPTER.name),
+            ("Available",   str(HAS_GPIO)),
+        ]),
     ]
-    for label, value in rows:
-        print(f"  {DIM}{label:<12}{RESET}{value}")
 
-    if throttle not in ("throttled=0x0", "unavailable"):
-        warn("Throttling detected — check your power supply / cooling")
-    log.info(f"System info: model={model} temp={temp} throttle={throttle}")
+    for section_title, rows in sections:
+        print(f"\n  {DIM}{section_title}{RESET}")
+        for label, value in rows:
+            color = ""
+            if label == "Throttle" and throttle_msg != "OK (0x0)":
+                color = YELLOW
+            print(f"    {DIM}{label:<14}{RESET}{color}{value}{RESET}")
+
+    if throttle_msg not in ("OK (0x0)", "unavailable"):
+        warn("Throttling detected — check power supply / cooling")
+    log.info(f"System info: model={model} temp={temp} throttle={throttle_msg}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEMPERATURE MONITOR
+# ══════════════════════════════════════════════════════════════════════════════
+def temperature_monitor():
+    """Continuous CPU temperature monitor with min/max tracking."""
+    print(f"\n{CYAN}=== CPU TEMPERATURE MONITOR ==={RESET}")
+    samples  = CFG.get("temp_samples", 10)
+    interval = CFG.get("temp_interval_s", 2)
+    info(f"Sampling every {interval}s for {samples} samples (Ctrl+C to stop early)")
+    print()
+
+    readings = []
+    try:
+        for i in range(samples):
+            try:
+                raw = subprocess.check_output(
+                    "vcgencmd measure_temp", shell=True,
+                    stderr=subprocess.DEVNULL, text=True).strip()
+                temp_val = float(raw.replace("temp=","").replace("'C",""))
+            except Exception:
+                try:
+                    with open("/sys/class/thermal/thermal_zone0/temp") as f:
+                        temp_val = int(f.read().strip()) / 1000.0
+                except Exception:
+                    warn("Cannot read temperature"); return
+
+            readings.append(temp_val)
+            bar_len = int((temp_val - 30) / 2)
+            bar_len = max(0, min(bar_len, 40))
+            color = GREEN if temp_val < 60 else YELLOW if temp_val < 75 else RED
+            bar = "█" * bar_len
+            print(f"\r  [{i+1:>2}/{samples}]  {color}{temp_val:5.1f}°C  {bar:<40}{RESET}",
+                  end="", flush=True)
+            if i < samples - 1:
+                time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
+
+    if readings:
+        print(f"\n\n  {DIM}Min:{RESET} {min(readings):.1f}°C  "
+              f"{DIM}Max:{RESET} {max(readings):.1f}°C  "
+              f"{DIM}Avg:{RESET} {sum(readings)/len(readings):.1f}°C\n")
+        ok(f"Temperature monitor complete ({len(readings)} samples)")
+        log.info(f"Temp monitor: min={min(readings):.1f} max={max(readings):.1f} avg={sum(readings)/len(readings):.1f}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GPIO PIN SNAPSHOT
 # ══════════════════════════════════════════════════════════════════════════════
 def _sysfs_pin_info(bcm: int) -> tuple:
-    """
-    Read a BCM pin's mode and value directly from the kernel sysfs/debugfs
-    WITHOUT calling GPIO.setup() — so it never clobbers manually set pins.
-    Returns (mode_str, value_int|None).
-    mode_str is one of: 'OUT', 'IN', 'ALT0'..'ALT5', '???'
-    """
-    # Try /sys/kernel/debug/gpio  (needs root but gives mode + value)
     debug = "/sys/kernel/debug/gpio"
     if os.path.exists(debug):
         try:
             with open(debug) as f:
                 for line in f:
-                    # lines look like:  gpio-17  (              |sysfs               ) in  lo
                     if f"gpio-{bcm} " in line or f"gpio-{bcm}\t" in line:
                         parts = line.split(")")
                         if len(parts) >= 2:
@@ -711,28 +950,21 @@ def _sysfs_pin_info(bcm: int) -> tuple:
         except (PermissionError, OSError):
             pass
 
-    # Fallback: /sys/class/gpio/gpioN  (only exists if pin was exported)
     gpio_dir = f"/sys/class/gpio/gpio{bcm}"
     if os.path.exists(gpio_dir):
         try:
-            with open(f"{gpio_dir}/direction") as f:
-                mode = f.read().strip().upper()   # 'in' or 'out'
-            with open(f"{gpio_dir}/value") as f:
-                val  = int(f.read().strip())
+            with open(f"{gpio_dir}/direction") as f: mode = f.read().strip().upper()
+            with open(f"{gpio_dir}/value")     as f: val  = int(f.read().strip())
             return mode, val
         except (PermissionError, OSError):
             pass
 
-    # Last resort: use RPi.GPIO gpio_function() — read-only, no setup() call
-    if HAS_GPIO and GPIO_ADAPTER.name == "RPi.GPIO":
+    if HAS_GPIO and hasattr(GPIO_ADAPTER, "gpio_function"):
         try:
-            fn = GPIO_ADAPTER._G.gpio_function(bcm)
-            # 0=OUT, 1=IN, 2=ALT5, 3=ALT4, 4=ALT0, 5=ALT1, 6=ALT2, 7=ALT3
-            fn_map = {0:"OUT", 1:"IN", 2:"ALT5", 3:"ALT4",
-                      4:"ALT0", 5:"ALT1", 6:"ALT2", 7:"ALT3"}
-            mode = fn_map.get(fn, "???")
-            # Read value only for IN/OUT (avoid disturbing ALT pins)
-            if fn in (0, 1):
+            fn = GPIO_ADAPTER.gpio_function(bcm)
+            fn_map = {0:"OUT",1:"IN",2:"ALT5",3:"ALT4",4:"ALT0",5:"ALT1",6:"ALT2",7:"ALT3"}
+            mode   = fn_map.get(fn, "???")
+            if fn in (0,1):
                 val = GPIO_ADAPTER._G.input(bcm)
                 return mode, val
             return mode, None
@@ -741,53 +973,36 @@ def _sysfs_pin_info(bcm: int) -> tuple:
 
     return "???", None
 
-
 def gpio_snapshot():
     print(f"\n{CYAN}=== GPIO PIN STATE SNAPSHOT ==={RESET}")
-    info("Reading pin state from kernel — no pins are reconfigured")
+    info("Reading from kernel — no pins are reconfigured")
     print()
-
-    # Also run gpio readall if available — gives the most accurate picture
-    has_gpio_cmd = os.system("which gpio > /dev/null 2>&1") == 0
-
-    # Collect sysfs data for our PIN_MAP pins
-    bcm_pins = sorted(p[1] for p in PIN_MAP if p[1] is not None)
+    bcm_pins = sorted(e[1] for e in PIN_MAP if e[1] is not None)
     rows = []
     for bcm in bcm_pins:
-        phys = _bcm_to_phys(bcm)
-        # Find label from PIN_MAP
-        label = next((p[2] for p in PIN_MAP if p[1] == bcm), f"GPIO{bcm}")
-        ptype = next((p[3] for p in PIN_MAP if p[1] == bcm), "GPIO")
+        entry = _bcm_to_entry(bcm)
+        phys  = entry[0] if entry else "?"
+        label = entry[2] if entry else f"GPIO{bcm}"
+        ptype = entry[3] if entry else "GPIO"
         mode, val = _sysfs_pin_info(bcm)
         rows.append((bcm, phys, label, ptype, mode, val))
 
-    # Header
     print(f"  {DIM}{'BCM':<6}{'Phys':<6}{'Label':<9}{'Mode':<6}{'Value'}{RESET}")
     print(f"  {DIM}{'─'*40}{RESET}")
-
     for bcm, phys, label, ptype, mode, val in rows:
         if val is None:
-            val_str   = f"{DIM}  —{RESET}"
-            row_color = DIM
+            val_str = f"{DIM}  —{RESET}"
         elif mode == "OUT":
-            val_str   = f"{GREEN}  HIGH{RESET}" if val else f"{RED}   LOW{RESET}"
-            row_color = GREEN if val else RED
+            val_str = f"{GREEN}  HIGH{RESET}" if val else f"{RED}   LOW{RESET}"
         else:
-            val_str   = f"{CYAN}  HIGH{RESET}" if val else f"{DIM}   LOW{RESET}"
-            row_color = RESET
-
-        mode_color = GREEN if mode == "OUT" else CYAN if mode == "IN" else YELLOW
+            val_str = f"{CYAN}  HIGH{RESET}" if val else f"{DIM}   LOW{RESET}"
+        mode_color = GREEN if mode=="OUT" else CYAN if mode=="IN" else YELLOW
         print(f"  {_pc(ptype, f'GPIO{bcm:<3}')}"
               f"  {DIM}P{phys:<5}{RESET}"
               f"  {_pc(ptype, f'{label:<8}')}"
               f"  {mode_color}{mode:<6}{RESET}"
               f"{val_str}")
-
     print()
-    if has_gpio_cmd:
-        info("Full wiringPi table  →  run: gpio readall")
-    else:
-        info("Install wiringPi for full table: sudo apt install wiringpi")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -796,7 +1011,7 @@ def gpio_snapshot():
 def _warn_if_pin_in_use(bcm: int):
     sysfs = f"/sys/class/gpio/gpio{bcm}"
     if os.path.exists(sysfs):
-        warn(f"GPIO{bcm} appears already exported ({sysfs}) — may conflict")
+        warn(f"GPIO{bcm} appears already exported — may conflict")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -820,14 +1035,13 @@ def gpio_test() -> bool:
             _warn_if_pin_in_use(out_pin)
             GPIO_ADAPTER.setup(out_pin, "out")
             GPIO_ADAPTER.setup(in_pin,  "in")
-            for level, label in [(1, "HIGH"), (0, "LOW")]:
+            for level, label in [(1,"HIGH"),(0,"LOW")]:
                 GPIO_ADAPTER.output(out_pin, level)
                 time.sleep(0.05)
                 try:
                     read = GPIO_ADAPTER.input(in_pin)
                 except PermissionError:
-                    fail(f"PermissionError on GPIO{in_pin} — "
-                         f"sudo usermod -aG gpio $USER  then re-login")
+                    fail(f"PermissionError GPIO{in_pin} — sudo usermod -aG gpio $USER")
                     results.append(False); continue
                 passed = read == level
                 msg    = f"GPIO{out_pin}→GPIO{in_pin}  {label}"
@@ -836,6 +1050,38 @@ def gpio_test() -> bool:
                 results.append(passed)
     finally:
         GPIO_ADAPTER._release_pins(*all_pins)
+    return all(results)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PULL-UP / PULL-DOWN TEST (no jumper wire needed)
+# ══════════════════════════════════════════════════════════════════════════════
+def gpio_pull_test() -> bool:
+    """Test internal pull-up and pull-down resistors — no external wiring needed."""
+    print(f"\n{CYAN}=== GPIO PULL-UP / PULL-DOWN TEST ==={RESET}")
+    if not HAS_GPIO:
+        fail("No GPIO backend available"); return False
+
+    pin = CFG.get("pulltest_pin", 27)
+    info(f"Testing GPIO{pin} (Pin {_bcm_to_phys(pin)}) — no wiring required")
+
+    if not hasattr(GPIO_ADAPTER, "setup_pull"):
+        warn(f"Backend {GPIO_ADAPTER.name} pull-up/down API not exposed — skipping")
+        return False
+
+    results = []
+    try:
+        for pull, expected, label in [("up",1,"pull-up"),("down",0,"pull-down")]:
+            GPIO_ADAPTER.setup_pull(pin, pull)
+            time.sleep(0.05)
+            val    = GPIO_ADAPTER.input(pin)
+            passed = val == expected
+            msg    = f"GPIO{pin} with {label}: reads {'HIGH' if val else 'LOW'} (expected {'HIGH' if expected else 'LOW'})"
+            (ok if passed else fail)(msg)
+            log.info(f"Pull test {label}: {'PASS' if passed else 'FAIL'} — {msg}")
+            results.append(passed)
+    finally:
+        GPIO_ADAPTER._release_pins(pin)
     return all(results)
 
 
@@ -852,8 +1098,7 @@ def gpio_interrupt_test() -> bool:
         return _gpio_interrupt_poll_fallback()
 
     out_pin, in_pin = 17, 27
-    info(f"Wire GPIO{out_pin} (Pin {_bcm_to_phys(out_pin)}) → "
-         f"GPIO{in_pin} (Pin {_bcm_to_phys(in_pin)})")
+    info(f"Wire GPIO{out_pin} (Pin {_bcm_to_phys(out_pin)}) → GPIO{in_pin} (Pin {_bcm_to_phys(in_pin)})")
     _input("  Press ENTER when ready… ")
 
     detected = []
@@ -873,7 +1118,7 @@ def gpio_interrupt_test() -> bool:
         log.info(f"IRQ test: {'PASS' if passed else 'FAIL'} — {msg}")
         return passed
     except AttributeError:
-        warn("Backend missing add_event_detect — using poll fallback")
+        warn("Backend missing add_event_detect — polling fallback")
         return _gpio_interrupt_poll_fallback()
     except Exception as e:
         fail(f"Interrupt error: {e}"); return False
@@ -901,7 +1146,7 @@ def _gpio_interrupt_poll_fallback() -> bool:
         passed = edges >= 4
         msg    = f"Polling detected {edges} rising edges"
         (ok if passed else fail)(msg)
-        log.info(f"IRQ poll fallback: {'PASS' if passed else 'FAIL'} — {msg}")
+        log.info(f"IRQ poll: {'PASS' if passed else 'FAIL'} — {msg}")
         return passed
     finally:
         GPIO_ADAPTER._release_pins(out_pin, in_pin)
@@ -915,22 +1160,20 @@ def pwm_test() -> bool:
     if not HAS_GPIO:
         fail("No GPIO backend available"); return False
 
-    pin  = CFG["pwm_pin"]
-    freq = CFG["pwm_freq_hz"]
+    pin = CFG["pwm_pin"]; freq = CFG["pwm_freq_hz"]
     info(f"LED + 330Ω → GPIO{pin} (Pin {_bcm_to_phys(pin)}), cathode → GND")
     _input("  Press ENTER to start… ")
     try:
         pwm = GPIO_ADAPTER.pwm(pin, freq)
         pwm.start(0)
-        for dc in list(range(0, 101, 5)) + list(range(100, -1, -5)):
-            print(f"\r  Duty cycle: {dc:3d}%", end="", flush=True)
+        for dc in list(range(0,101,5)) + list(range(100,-1,-5)):
+            print(f"\r  Duty cycle: {dc:3d}%  {'█'*(dc//5)}{' '*(20-dc//5)}", end="", flush=True)
             pwm.ChangeDutyCycle(dc)
-            time.sleep(0.08)
+            time.sleep(0.06)
         print()
         pwm.stop()
         ok("PWM ramp completed")
-        log.info("PWM LED test: PASS")
-        return True
+        log.info("PWM LED: PASS"); return True
     except Exception as e:
         fail(f"PWM error: {e}"); log.error(f"PWM: {e}"); return False
     finally:
@@ -947,46 +1190,35 @@ def pwm_servo_test() -> bool:
 
     pin = CFG["servo_pin"]
     info(f"Servo signal → GPIO{pin} (Pin {_bcm_to_phys(pin)})")
-    info("Servo VCC    → 5V (Pin 2 or 4),  GND → Pin 6")
+    info("Servo VCC → 5V (Pin 2/4)  |  GND → Pin 6")
     info("Sweep: 0° → 90° → 180° → 90° → 0°")
     _input("  Press ENTER to start… ")
 
-    if GPIO_ADAPTER.name == "pigpio" and hasattr(GPIO_ADAPTER, "servo_pulse"):
+    if GPIO_ADAPTER.name == "pigpio" and hasattr(GPIO_ADAPTER,"servo_pulse"):
         return _servo_pigpio(pin)
 
     try:
-        pwm = GPIO_ADAPTER.pwm(pin, 50)  # 50 Hz standard for servos
+        pwm = GPIO_ADAPTER.pwm(pin, 50)
         pwm.start(7.5)
-        positions = [(2.5,"  0°"), (7.5," 90°"), (12.5,"180°"),
-                     (7.5," 90°"), (2.5,"  0°")]
+        positions = [(2.5,"  0°"),(7.5," 90°"),(12.5,"180°"),(7.5," 90°"),(2.5,"  0°")]
         for dc, label in positions:
             print(f"\r  Position: {label}", end="", flush=True)
-            pwm.ChangeDutyCycle(dc)
-            time.sleep(0.7)
-        print()
-        pwm.stop()
-        ok("Servo sweep completed")
-        log.info("Servo PWM: PASS")
-        return True
+            pwm.ChangeDutyCycle(dc); time.sleep(0.7)
+        print(); pwm.stop()
+        ok("Servo sweep completed"); log.info("Servo PWM: PASS"); return True
     except Exception as e:
         fail(f"Servo error: {e}"); log.error(f"Servo: {e}"); return False
     finally:
         GPIO_ADAPTER._release_pins(pin)
 
-
 def _servo_pigpio(pin: int) -> bool:
     try:
-        positions = [(500,"  0°"),(1500," 90°"),(2500,"180°"),
-                     (1500," 90°"),(500,"  0°")]
+        positions = [(500,"  0°"),(1500," 90°"),(2500,"180°"),(1500," 90°"),(500,"  0°")]
         for us, label in positions:
             print(f"\r  Position: {label}  ({us}µs)", end="", flush=True)
-            GPIO_ADAPTER.servo_pulse(pin, us)
-            time.sleep(0.7)
-        GPIO_ADAPTER.servo_pulse(pin, 0)  # release torque
-        print()
-        ok("Servo sweep completed (pigpio native)")
-        log.info("Servo PWM pigpio: PASS")
-        return True
+            GPIO_ADAPTER.servo_pulse(pin, us); time.sleep(0.7)
+        GPIO_ADAPTER.servo_pulse(pin, 0); print()
+        ok("Servo sweep completed (pigpio native)"); log.info("Servo pigpio: PASS"); return True
     except Exception as e:
         fail(f"pigpio servo error: {e}"); return False
     finally:
@@ -994,205 +1226,219 @@ def _servo_pigpio(pin: int) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# I2C — primary + alternatives
+# 1-WIRE / DS18B20 TEMPERATURE SENSOR
+# ══════════════════════════════════════════════════════════════════════════════
+def onewire_test() -> bool:
+    """Test 1-Wire bus and read DS18B20 temperature sensor(s)."""
+    print(f"\n{CYAN}=== 1-WIRE / DS18B20 SENSOR TEST ==={RESET}")
+    info("Connect DS18B20: VCC→3.3V (Pin 1), GND→GND (Pin 6), DATA→GPIO4 (Pin 7)")
+    info("Add 4.7kΩ pull-up between DATA and VCC")
+    info("Enable 1-Wire: sudo raspi-config → Interface Options → 1-Wire → Yes")
+    _input("  Press ENTER to scan… ")
+
+    base = "/sys/bus/w1/devices"
+    if not os.path.exists(base):
+        fail("1-Wire subsystem not found — check raspi-config and reboot")
+        log.error("1-Wire: /sys/bus/w1/devices not found"); return False
+
+    sensors = glob.glob(f"{base}/28-*")
+    if not sensors:
+        fail("No DS18B20 sensors found")
+        info("Check wiring and pull-up resistor. ls /sys/bus/w1/devices/ for raw listing")
+        log.error("1-Wire: no 28-* devices"); return False
+
+    info(f"Found {len(sensors)} sensor(s):")
+    results = []
+    for sensor_path in sensors:
+        sensor_id = os.path.basename(sensor_path)
+        w1_file   = os.path.join(sensor_path, "w1_slave")
+        try:
+            with open(w1_file) as f:
+                lines = f.readlines()
+            if "YES" not in lines[0]:
+                fail(f"{sensor_id}: CRC check failed — check wiring")
+                results.append(False); continue
+            temp_raw = lines[1].split("t=")[1].strip()
+            temp_c   = float(temp_raw) / 1000.0
+            temp_f   = temp_c * 9/5 + 32
+            ok(f"{sensor_id}: {temp_c:.3f}°C  ({temp_f:.2f}°F)")
+            log.info(f"1-Wire {sensor_id}: {temp_c:.3f}°C PASS")
+            results.append(True)
+        except Exception as e:
+            fail(f"{sensor_id}: read error — {e}")
+            log.error(f"1-Wire {sensor_id}: {e}")
+            results.append(False)
+
+    return all(results) if results else False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# I2C
 # ══════════════════════════════════════════════════════════════════════════════
 def i2c_test() -> bool:
     print(f"\n{CYAN}=== I2C BUS SCAN ==={RESET}")
     info(f"SDA → Pin 3  |  SCL → Pin 5  |  Bus {CFG['i2c_bus']}")
-    info("Enable I2C: sudo raspi-config → Interface Options → I2C")
+    info("Enable: sudo raspi-config → Interface Options → I2C")
     _input("  Press ENTER to scan… ")
 
     ret = os.system(f"i2cdetect -y {CFG['i2c_bus']}")
     if ret == 0:
         ok("i2cdetect scan succeeded")
-        log.info("I2C scan (i2cdetect): PASS")
-        return True
+        log.info("I2C scan: PASS"); return True
 
     warn("i2cdetect failed — trying smbus2 fallback")
     return _i2c_smbus2()
 
-
 def _i2c_smbus2() -> bool:
-    """Alternative I2C scan using smbus2 (pure Python)."""
     print(f"\n{CYAN}  → I2C via smbus2{RESET}")
+    try: import smbus2
+    except ImportError: fail("pip install smbus2"); return False
     try:
-        import smbus2
-    except ImportError:
-        fail("smbus2 not installed  →  pip install smbus2"); return False
-    try:
-        bus   = smbus2.SMBus(CFG["i2c_bus"])
-        found = []
+        bus = smbus2.SMBus(CFG["i2c_bus"]); found = []
         for addr in range(0x03, 0x78):
-            try:
-                bus.read_byte(addr); found.append(hex(addr))
-            except OSError:
-                pass
+            try: bus.read_byte(addr); found.append(hex(addr))
+            except OSError: pass
         bus.close()
-        if found:
-            ok(f"smbus2 found: {', '.join(found)}")
-        else:
-            info("smbus2: No devices (bus OK)")
-        log.info(f"I2C smbus2: {found}")
-        return True
+        if found: ok(f"smbus2 found: {', '.join(found)}")
+        else:      info("smbus2: No devices (bus OK)")
+        log.info(f"I2C smbus2: {found}"); return True
     except Exception as e:
         fail(f"smbus2 error: {e}"); log.error(f"I2C smbus2: {e}"); return False
 
+def i2c_register_read():
+    """Read a specific register from an I2C device."""
+    print(f"\n{CYAN}=== I2C REGISTER READ ==={RESET}")
+    try: import smbus2
+    except ImportError: fail("pip install smbus2"); return
+    try:
+        addr = int(_input("  Device address (hex e.g. 0x68): "), 16)
+        reg  = int(_input("  Register address (hex e.g. 0x75): "), 16)
+        bus  = smbus2.SMBus(CFG["i2c_bus"])
+        val  = bus.read_byte_data(addr, reg)
+        bus.close()
+        ok(f"Addr 0x{addr:02X}  Reg 0x{reg:02X}  =  0x{val:02X}  ({val}  {val:08b}b)")
+        log.info(f"I2C reg read 0x{addr:02X}[0x{reg:02X}] = 0x{val:02X}")
+    except (ValueError, KeyboardInterrupt):
+        warn("Invalid input")
+    except Exception as e:
+        fail(f"I2C register read error: {e}")
 
 def _i2c_busio() -> bool:
-    """Alternative I2C using CircuitPython busio (Blinka)."""
-    print(f"\n{CYAN}=== I2C SCAN (busio / CircuitPython) ==={RESET}")
-    try:
-        import board, busio
-    except ImportError:
-        fail("busio not available  →  pip install adafruit-blinka"); return False
+    print(f"\n{CYAN}=== I2C (busio/CircuitPython) ==={RESET}")
+    try: import board, busio
+    except ImportError: fail("pip install adafruit-blinka"); return False
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         while not i2c.try_lock(): time.sleep(0.01)
         addrs = [hex(a) for a in i2c.scan()]
         i2c.unlock(); i2c.deinit()
-        if addrs:
-            ok(f"busio found: {', '.join(addrs)}")
-        else:
-            info("busio: No devices (bus OK)")
-        log.info(f"I2C busio: {addrs}")
-        return True
+        if addrs: ok(f"busio found: {', '.join(addrs)}")
+        else:      info("busio: No devices (bus OK)")
+        log.info(f"I2C busio: {addrs}"); return True
     except Exception as e:
         fail(f"busio error: {e}"); log.error(f"I2C busio: {e}"); return False
 
-
 def i2c_alt_menu():
     print(f"\n{CYAN}=== I2C ALTERNATIVES ==={RESET}")
-    print("  1. smbus2 scan (pure Python)")
-    print("  2. busio  scan (CircuitPython / Blinka)")
-    print("  0. Back")
+    print("  1. smbus2 scan\n  2. busio scan\n  3. Register read\n  0. Back")
     choice = _input("\n  Select: ").strip()
     if choice == "1": _i2c_smbus2()
     elif choice == "2": _i2c_busio()
+    elif choice == "3": i2c_register_read()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SPI — spidev + busio fallback
+# SPI
 # ══════════════════════════════════════════════════════════════════════════════
 def spi_test() -> bool:
     print(f"\n{CYAN}=== SPI LOOPBACK TEST ==={RESET}")
     info("Connect MOSI (Pin 19) ↔ MISO (Pin 21)")
-    info("Enable SPI: sudo raspi-config → Interface Options → SPI")
+    info("Enable: sudo raspi-config → Interface Options → SPI")
     _input("  Press ENTER to run… ")
-    try:
-        import spidev
+    try: import spidev
     except ImportError:
-        warn("pip install spidev")
-        return _spi_busio_fallback()
+        warn("pip install spidev"); return _spi_busio_fallback()
     try:
         spi = spidev.SpiDev()
         spi.open(CFG["spi_bus"], CFG["spi_device"])
-        spi.max_speed_hz = CFG["spi_speed_hz"]
-        spi.mode = 0
+        spi.max_speed_hz = CFG["spi_speed_hz"]; spi.mode = 0
         payload  = [0xDE, 0xAD, 0xBE, 0xEF]
-        received = spi.xfer2(payload)
-        spi.close()
-        passed = payload == received
-        msg    = f"Sent {[hex(b) for b in payload]} | Got {[hex(b) for b in received]}"
+        received = spi.xfer2(payload); spi.close()
+        passed   = payload == received
+        msg      = f"Sent {[hex(b) for b in payload]} | Got {[hex(b) for b in received]}"
         (ok if passed else fail)(msg)
-        log.info(f"SPI spidev: {'PASS' if passed else 'FAIL'} — {msg}")
-        return passed
+        log.info(f"SPI: {'PASS' if passed else 'FAIL'}"); return passed
     except Exception as e:
-        fail(f"SPI spidev error: {e}"); log.error(f"SPI spidev: {e}")
-        warn("Trying busio fallback…")
+        fail(f"SPI error: {e}"); log.error(f"SPI: {e}")
         return _spi_busio_fallback()
 
-
 def _spi_busio_fallback() -> bool:
-    print(f"\n{CYAN}  → SPI via busio (Blinka){RESET}")
-    try:
-        import board, busio
-    except ImportError:
-        fail("busio not available  →  pip install adafruit-blinka"); return False
+    print(f"\n{CYAN}  → SPI via busio{RESET}")
+    try: import board, busio
+    except ImportError: fail("pip install adafruit-blinka"); return False
     try:
         spi = busio.SPI(board.SCLK, MOSI=board.MOSI, MISO=board.MISO)
         while not spi.try_lock(): time.sleep(0.01)
         spi.configure(baudrate=500000, polarity=0, phase=0, bits=8)
-        payload  = bytearray([0xDE, 0xAD, 0xBE, 0xEF])
-        received = bytearray(4)
-        spi.write_readinto(payload, received)
-        spi.unlock(); spi.deinit()
+        payload = bytearray([0xDE,0xAD,0xBE,0xEF]); received = bytearray(4)
+        spi.write_readinto(payload, received); spi.unlock(); spi.deinit()
         passed = list(payload) == list(received)
         msg    = f"Sent {list(payload)} | Got {list(received)}"
         (ok if passed else fail)(msg)
-        log.info(f"SPI busio: {'PASS' if passed else 'FAIL'} — {msg}")
-        return passed
+        log.info(f"SPI busio: {'PASS' if passed else 'FAIL'}"); return passed
     except Exception as e:
         fail(f"busio SPI error: {e}"); log.error(f"SPI busio: {e}"); return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UART — pyserial + pigpio bit-bang fallback
+# UART
 # ══════════════════════════════════════════════════════════════════════════════
 def uart_test() -> bool:
     print(f"\n{CYAN}=== UART LOOPBACK TEST ==={RESET}")
     info("Connect TX (Pin 8) ↔ RX (Pin 10)")
-    info("Disable serial console first:")
-    info("  sudo raspi-config → Interface → Serial Port")
-    info("    → login shell: No  → serial port hardware: Yes")
+    info("Disable serial console: raspi-config → Interface → Serial Port")
+    info("  → login shell: No  → serial port hardware: Yes")
     _input("  Press ENTER to run… ")
-    try:
-        import serial
+    try: import serial
     except ImportError:
-        warn("pip install pyserial")
-        return _uart_pigpio_fallback()
+        warn("pip install pyserial"); return _uart_pigpio_fallback()
 
-    device   = CFG["uart_device"]
-    baudrate = CFG["uart_baud"]
+    device = CFG["uart_device"]; baudrate = CFG["uart_baud"]
     test_msg = b"UART_LOOPBACK_TEST_OK"
     try:
         with serial.Serial(device, baudrate=baudrate, timeout=2) as ser:
-            ser.reset_input_buffer()
-            ser.write(test_msg)
-            response = b""
-            deadline = time.time() + 2.0
+            ser.reset_input_buffer(); ser.write(test_msg)
+            response = b""; deadline = time.time() + 2.0
             while len(response) < len(test_msg) and time.time() < deadline:
-                chunk = ser.read(len(test_msg) - len(response))
+                chunk = ser.read(len(test_msg)-len(response))
                 if chunk: response += chunk
                 else:     time.sleep(0.05)
         passed = response == test_msg
         msg    = f"Sent: {test_msg!r}  |  Got: {response!r}"
         (ok if passed else fail)(msg)
-        log.info(f"UART pyserial: {'PASS' if passed else 'FAIL'} — {msg}")
-        return passed
+        log.info(f"UART: {'PASS' if passed else 'FAIL'}"); return passed
     except Exception as e:
-        fail(f"UART error: {e}"); log.error(f"UART pyserial: {e}")
-        warn("Trying pigpio bit-bang fallback…")
+        fail(f"UART error: {e}"); log.error(f"UART: {e}")
         return _uart_pigpio_fallback()
-
 
 def _uart_pigpio_fallback() -> bool:
     print(f"\n{CYAN}  → UART via pigpio bit-bang{RESET}")
     if GPIO_ADAPTER.name != "pigpio":
-        fail("pigpio backend not active — cannot use bit-bang UART"); return False
+        fail("pigpio backend not active"); return False
     try:
-        pi       = GPIO_ADAPTER._pi
-        pg       = GPIO_ADAPTER._pg
-        tx_pin   = 14; rx_pin = 15
-        baud     = CFG["uart_baud"]
-        test_msg = b"UART_BB_OK"
-
+        pi = GPIO_ADAPTER._pi; pg = GPIO_ADAPTER._pg
+        tx_pin=14; rx_pin=15; baud=CFG["uart_baud"]; test_msg=b"UART_BB_OK"
         pi.set_mode(tx_pin, pg.OUTPUT)
         pi.bb_serial_read_open(rx_pin, baud, 8)
-        pi.wave_clear()
-        pi.wave_add_serial(tx_pin, baud, test_msg)
-        wave_id = pi.wave_create()
-        pi.wave_send_once(wave_id)
+        pi.wave_clear(); pi.wave_add_serial(tx_pin, baud, test_msg)
+        wave_id = pi.wave_create(); pi.wave_send_once(wave_id)
         while pi.wave_tx_busy(): time.sleep(0.01)
-        time.sleep(0.2)
-        count, data = pi.bb_serial_read(rx_pin)
-        pi.bb_serial_read_close(rx_pin)
-        pi.wave_delete(wave_id)
-
+        time.sleep(0.2); count, data = pi.bb_serial_read(rx_pin)
+        pi.bb_serial_read_close(rx_pin); pi.wave_delete(wave_id)
         passed = data == test_msg
         msg    = f"Sent: {test_msg!r}  |  Got: {data!r}"
         (ok if passed else fail)(msg)
-        log.info(f"UART pigpio: {'PASS' if passed else 'FAIL'} — {msg}")
-        return passed
+        log.info(f"UART pigpio: {'PASS' if passed else 'FAIL'}"); return passed
     except Exception as e:
         fail(f"pigpio UART error: {e}"); log.error(f"UART pigpio: {e}"); return False
 
@@ -1207,22 +1453,28 @@ def manual_gpio():
     try:
         bcm  = int(_input("  BCM GPIO number: "))
         phys = _bcm_to_phys(bcm)
-        info(f"GPIO{bcm} → physical Pin {phys}")
+        entry = _bcm_to_entry(bcm)
+        info(f"GPIO{bcm} → Pin {phys}" + (f"  [{entry[2]} / {entry[3]}]" if entry else ""))
+        if entry and entry[5]:
+            alts = "  ".join(f"{k}:{v}" for k,v in entry[5].items() if v)
+            info(f"Alt functions: {alts}")
         mode = _input("  Mode (out/in): ").strip().lower()
         if mode == "out":
             GPIO_ADAPTER.setup(bcm, "out")
             val = int(_input("  Value (1=HIGH, 0=LOW): "))
             GPIO_ADAPTER.output(bcm, val)
             ok(f"GPIO{bcm} (Pin {phys}) → {'HIGH' if val else 'LOW'}")
-            info("Pin will hold this state until the next test or program exit")
             log.info(f"Manual GPIO{bcm} = {val}")
-            # Do NOT call _release_pins here — that would reset the output level
         elif mode == "in":
-            GPIO_ADAPTER.setup(bcm, "in")
+            pull = _input("  Pull (up/down/none) [none]: ").strip().lower() or "none"
+            if hasattr(GPIO_ADAPTER,"setup_pull"):
+                GPIO_ADAPTER.setup_pull(bcm, pull)
+            else:
+                GPIO_ADAPTER.setup(bcm, "in")
             val = GPIO_ADAPTER.input(bcm)
-            ok(f"GPIO{bcm} (Pin {phys}) reads {'HIGH' if val else 'LOW'} ({val})")
+            ok(f"GPIO{bcm} (Pin {phys}) reads {'HIGH' if val else 'LOW'} ({val}) [pull={pull}]")
             log.info(f"Manual GPIO{bcm} read {val}")
-            GPIO_ADAPTER._release_pins(bcm)   # safe to release input pins
+            GPIO_ADAPTER._release_pins(bcm)
         else:
             warn("Use 'in' or 'out'")
     except PermissionError:
@@ -1256,32 +1508,32 @@ def show_backends():
     backends = [
         ("RPi.GPIO",  "rpigpio",
          "pip install RPi.GPIO",
-         "Default for Pi 1–4. Not supported on Pi 5.",
+         "Default for Pi 1–4. Not supported on Pi 5. Event detection supported.",
          "GPIO.setup(), GPIO.output(), GPIO.PWM()"),
         ("pigpio",    "pigpio",
          "pip install pigpio  +  sudo systemctl start pigpiod",
-         "Hardware-timed PWM, servo pulses, remote GPIO. Best accuracy.",
+         "Hardware-timed PWM, servo pulses, bit-bang UART, remote GPIO. Best accuracy.",
          "pi.write(), pi.set_servo_pulsewidth()"),
         ("lgpio",     "lgpio",
          "pip install lgpio",
-         "Modern replacement for RPi.GPIO. Works on Pi 5.",
+         "Modern replacement for RPi.GPIO. Supports Pi 5. Hardware PWM.",
          "lgpio.gpio_write(), lgpio.tx_pwm()"),
         ("gpiod",     "gpiod",
          "pip install gpiod  (libgpiod >= 2.x)",
-         "Kernel char-device interface. No root needed. Software PWM only.",
+         "Kernel character device. No root required. Software PWM via threading.",
          "chip.get_line(), line.set_value()"),
         ("gpiozero",  "gpiozero",
          "pip install gpiozero",
-         "High-level abstraction. Great for quick scripts.",
+         "High-level abstraction. Great for rapid prototyping.",
          "LED(), Button(), PWMLED(), MCP3008()"),
-        ("busio",     "—",
-         "pip install adafruit-blinka",
-         "CircuitPython I2C/SPI/UART abstraction (Blinka). Platform-agnostic.",
-         "busio.I2C(), busio.SPI(), busio.UART()"),
         ("smbus2",    "—",
          "pip install smbus2",
-         "Pure-Python SMBus/I2C. No GPIO dependency.",
-         "SMBus(1).read_byte(addr), write_byte_data()"),
+         "Pure-Python SMBus/I2C. No GPIO dependency. register read/write.",
+         "SMBus(1).read_byte(addr), read_byte_data(addr, reg)"),
+        ("busio",     "—",
+         "pip install adafruit-blinka",
+         "CircuitPython I2C/SPI/UART (Blinka). Platform-agnostic.",
+         "busio.I2C(), busio.SPI(), busio.UART()"),
     ]
     for name, env_val, install, desc, api in backends:
         active = " ← active" if GPIO_ADAPTER.name == name else ""
@@ -1291,8 +1543,7 @@ def show_backends():
         print(f"    {DIM}Info    :{RESET} {desc}")
         print(f"    {DIM}Key API :{RESET} {api}")
         if env_val != "—":
-            print(f"    {DIM}Select  :{RESET} "
-                  f"RPI_GPIO_BACKEND={env_val} python3 rpi_hardware_test.py")
+            print(f"    {DIM}Select  :{RESET} RPI_GPIO_BACKEND={env_val} python3 rpi_hardware_test.py")
     print()
 
 
@@ -1303,13 +1554,11 @@ def edit_config():
     print(f"\n{CYAN}=== CONFIGURATION ==={RESET}")
     print(f"  Config file: {CONFIG_FILE}")
     for k, v in CFG.items():
-        print(f"  {DIM}{k:<20}{RESET}{v}")
+        print(f"  {DIM}{k:<22}{RESET}{v}")
     print()
     choice = _input("  Save defaults to file? (y/n): ").strip().lower()
-    if choice == "y":
-        save_default_config()
-    else:
-        info("Edit rpi_test.json manually to customise pins, speeds, device paths")
+    if choice == "y": save_default_config()
+    else: info("Edit rpi_test.json manually to customise pins, speeds, paths")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1317,23 +1566,38 @@ def edit_config():
 # ══════════════════════════════════════════════════════════════════════════════
 def run_all() -> dict:
     results = {
-        "GPIO Loopback":  gpio_test(),
-        "GPIO Interrupt": gpio_interrupt_test(),
-        "PWM (LED)":      pwm_test(),
-        "Servo PWM":      pwm_servo_test(),
-        "I2C Scan":       i2c_test(),
-        "SPI Loopback":   spi_test(),
-        "UART Loopback":  uart_test(),
+        "GPIO Loopback":   gpio_test(),
+        "GPIO Pull R/R":   gpio_pull_test(),
+        "GPIO Interrupt":  gpio_interrupt_test(),
+        "PWM (LED)":       pwm_test(),
+        "Servo PWM":       pwm_servo_test(),
+        "1-Wire DS18B20":  onewire_test(),
+        "I2C Scan":        i2c_test(),
+        "SPI Loopback":    spi_test(),
+        "UART Loopback":   uart_test(),
     }
     _print_summary(results)
     log.info(f"Run-all: {results}")
+
+    if JSON_OUTPUT:
+        out = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "backend":   GPIO_ADAPTER.name,
+            "results":   {k: ("PASS" if v else "FAIL") for k,v in results.items()},
+            "passed":    sum(results.values()),
+            "total":     len(results),
+        }
+        path = "rpi_results.json"
+        with open(path, "w") as f:
+            json.dump(out, f, indent=2)
+        ok(f"JSON results saved to {path}")
     return results
 
 
 def _print_summary(results: dict):
     total  = len(results)
     passed = sum(results.values())
-    bar    = "─" * 36
+    bar    = "─" * 38
     print(f"\n{CYAN}{bar}{RESET}")
     print(f"{CYAN}  TEST SUMMARY{RESET}")
     print(f"{CYAN}{bar}{RESET}")
@@ -1341,7 +1605,7 @@ def _print_summary(results: dict):
         color = GREEN if p else RED
         state = "PASS" if p else "FAIL"
         print(f"  {color}{state}{RESET}  {name}")
-    color = GREEN if passed == total else (YELLOW if passed > 0 else RED)
+    color = GREEN if passed==total else (YELLOW if passed>0 else RED)
     print(f"\n  {color}{passed}/{total} tests passed{RESET}")
     print(f"{CYAN}{bar}{RESET}\n")
 
@@ -1361,29 +1625,33 @@ def run_headless():
 # ══════════════════════════════════════════════════════════════════════════════
 def menu():
     options = {
-        "1":   ("GPIO Loopback Test",         gpio_test),
-        "1b":  ("GPIO Interrupt / Edge Test",  gpio_interrupt_test),
-        "2":   ("Manual GPIO Control",         manual_gpio),
-        "3":   ("PWM Test  (LED ramp)",        pwm_test),
-        "3b":  ("PWM Test  (Servo sweep)",     pwm_servo_test),
-        "4":   ("I2C Scan  (i2cdetect)",       i2c_test),
-        "4b":  ("I2C Alternatives",            i2c_alt_menu),
-        "5":   ("SPI Loopback Test",           spi_test),
-        "6":   ("UART Loopback Test",          uart_test),
-        "7":   ("Run ALL Tests",               run_all),
-        "s":   ("System Info",                 system_info),
-        "p":   ("GPIO Pin Snapshot",           gpio_snapshot),
-        "c":   ("Check Dependencies",          check_deps),
-        "b":   ("GPIO Backend Reference",      show_backends),
-        "l":   ("View Session Log",            view_log),
-        "cfg": ("Edit / Save Config",          edit_config),
-        "8":   ("40-Pin Reference Table",      gpio_reference),
-        "9":   ("Search Pins",                 gpio_reference_search),
-        "f":   ("Filter Pins by Type",         gpio_reference_by_type),
-        "0":   ("Exit",                        None),
+        "1":   ("GPIO Loopback Test",            gpio_test),
+        "1b":  ("GPIO Interrupt / Edge Test",    gpio_interrupt_test),
+        "1c":  ("GPIO Pull-up / Pull-down Test", gpio_pull_test),
+        "2":   ("Manual GPIO Control",           manual_gpio),
+        "3":   ("PWM Test  (LED ramp)",          pwm_test),
+        "3b":  ("PWM Test  (Servo sweep)",       pwm_servo_test),
+        "4":   ("I2C Scan  (i2cdetect)",         i2c_test),
+        "4b":  ("I2C Alternatives / Reg Read",   i2c_alt_menu),
+        "5":   ("SPI Loopback Test",             spi_test),
+        "6":   ("UART Loopback Test",            uart_test),
+        "6b":  ("1-Wire / DS18B20 Sensor Test",  onewire_test),
+        "7":   ("Run ALL Tests",                 run_all),
+        "s":   ("System Info",                   system_info),
+        "t":   ("Temperature Monitor",           temperature_monitor),
+        "p":   ("GPIO Pin Snapshot",             gpio_snapshot),
+        "c":   ("Check Dependencies",            check_deps),
+        "b":   ("GPIO Backend Reference",        show_backends),
+        "l":   ("View Session Log",              view_log),
+        "cfg": ("Edit / Save Config",            edit_config),
+        "8":   ("40-Pin Reference Table",        gpio_reference),
+        "8b":  ("Alternate Functions Table",     show_alt_functions),
+        "9":   ("Search Pins / Alt Functions",   gpio_reference_search),
+        "f":   ("Filter Pins by Type",           gpio_reference_by_type),
+        "0":   ("Exit",                          None),
     }
-    REF_KEYS  = {"8", "9", "f"}
-    INFO_KEYS = {"s", "p", "c", "b", "l", "cfg"}
+    REF_KEYS  = {"8","8b","9","f"}
+    INFO_KEYS = {"s","t","p","c","b","l","cfg"}
 
     while True:
         print(f"\n{CYAN}╔════════════════════════════════╗")
@@ -1397,24 +1665,19 @@ def menu():
             "8":   f"  {DIM}──── GPIO Reference ──────────────{RESET}",
         }
         for key, (label, _) in options.items():
-            if key in sections:
-                print(sections[key])
+            if key in sections: print(sections[key])
             tag = (f"{CYAN}[ref]{RESET}" if key in REF_KEYS else
                    f"{YELLOW}[inf]{RESET}" if key in INFO_KEYS else "     ")
             print(f"  {tag}  {key:>3}.  {label}")
 
         choice = _input("\nSelect option: ").strip().lower()
         if choice == "0":
-            info("Bye!")
-            GPIO_ADAPTER.cleanup()
-            break
+            info("Bye!"); GPIO_ADAPTER.cleanup(); break
         elif choice in options:
             _, fn = options[choice]
             if fn:
-                try:
-                    fn()
-                except KeyboardInterrupt:
-                    warn("Interrupted")
+                try: fn()
+                except KeyboardInterrupt: warn("Interrupted")
         else:
             warn("Invalid choice — try again")
 
@@ -1429,15 +1692,15 @@ if __name__ == "__main__":
         elif "--info"        in sys.argv: system_info()
         elif "--backends"    in sys.argv: show_backends()
         elif "--snapshot"    in sys.argv: gpio_snapshot()
+        elif "--alt"         in sys.argv: show_alt_functions()
+        elif "--temp"        in sys.argv: temperature_monitor()
         elif "--save-config" in sys.argv: save_default_config()
         else:
             check_deps(silent=True)
             menu()
     except KeyboardInterrupt:
         print(f"\n\n  {YELLOW}⚠{RESET}  Interrupted — cleaning up…")
-        try:
-            GPIO_ADAPTER.cleanup()
-        except Exception:
-            pass
+        try: GPIO_ADAPTER.cleanup()
+        except Exception: pass
         print(f"  {CYAN}ℹ{RESET}  Bye!")
         sys.exit(0)
