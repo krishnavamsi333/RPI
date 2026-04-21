@@ -1,0 +1,1433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Raspberry Pi 4 — Complete GPIO & Hardware Reference</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+html { color-scheme: light; }
+:root {
+  --bg:        #f8f9fc;
+  --bg2:       #ffffff;
+  --bg3:       #f0f2f7;
+  --bg4:       #e4e8f0;
+  --border:    #d0d6e4;
+  --border2:   #b0bace;
+  --text:      #1a1e2e;
+  --text2:     #4a5270;
+  --text3:     #7a85a0;
+  --text4:     #aab2c8;
+
+  --red:       #d42b2b;   --red-d:  #fdeaea;  --red-b:  #f5b8b8;
+  --orange:    #c45c10;   --orn-d:  #fff0e6;  --orn-b:  #f5c8a0;
+  --yellow:    #8a6e00;   --yel-d:  #fffbe6;  --yel-b:  #f0d878;
+  --green:     #1a7a45;   --grn-d:  #eafaf2;  --grn-b:  #9de8c0;
+  --cyan:      #0b7a96;   --cyn-d:  #e6f8fd;  --cyn-b:  #90d8ee;
+  --blue:      #2055c8;   --blu-d:  #eaf0fd;  --blu-b:  #a0baf5;
+  --purple:    #6030b8;   --pur-d:  #f3eeff;  --pur-b:  #c8aaee;
+  --pink:      #a83060;   --pnk-d:  #fdeef4;  --pnk-b:  #f0a8c8;
+  --teal:      #0a6e5a;   --tel-d:  #e6faf6;  --tel-b:  #88ddc8;
+  --gray:      #5a6278;   --gry-d:  #f0f2f6;  --gry-b:  #c8cedd;
+  --accent:    #d42b2b;
+}
+
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0 }
+html { scroll-behavior:smooth }
+body {
+  background:var(--bg);
+  color:var(--text);
+  font-family:'JetBrains Mono',monospace;
+  font-size:13px;
+  line-height:1.6;
+  overflow-x:hidden;
+}
+
+/* ── HERO ── */
+.hero {
+  background: linear-gradient(160deg, #eef2ff 0%, #f8f9fc 60%);
+  border-bottom: 1px solid var(--border);
+  padding: 60px 48px 50px;
+  position: relative;
+  overflow: hidden;
+}
+.hero::before {
+  content:'';
+  position:absolute; inset:0;
+  background: radial-gradient(ellipse 800px 400px at 70% 50%, rgba(32,85,200,0.05) 0%, transparent 70%),
+              radial-gradient(ellipse 400px 300px at 20% 80%, rgba(212,43,43,0.03) 0%, transparent 60%);
+  pointer-events:none;
+}
+.hero-grid {
+  display:grid; grid-template-columns:1fr auto; align-items:center; gap:40px;
+  max-width:1400px; margin:0 auto; position:relative; z-index:1;
+}
+.hero-eyebrow {
+  font-size:10px; font-weight:500; letter-spacing:.3em; text-transform:uppercase;
+  color:var(--red); margin-bottom:14px; display:flex; align-items:center; gap:10px;
+}
+.hero-eyebrow::before {
+  content:''; width:30px; height:1px; background:var(--red);
+}
+.hero-title {
+  font-family:'Syne',sans-serif; font-size:42px; font-weight:800;
+  letter-spacing:-.04em; line-height:1.05; margin-bottom:18px;
+}
+.hero-title span { color:var(--red) }
+.hero-sub { font-size:13px; color:var(--text2); line-height:1.7; max-width:560px }
+.hero-badges { display:flex; flex-wrap:wrap; gap:8px; margin-top:24px }
+.hb {
+  padding:5px 12px; border-radius:4px; font-size:10px; font-weight:600;
+  letter-spacing:.05em; text-transform:uppercase; border:1px solid;
+}
+.hb-red    { background:var(--red-d);  color:var(--red);    border-color:var(--red-b) }
+.hb-blue   { background:var(--blu-d);  color:var(--blue);   border-color:var(--blu-b) }
+.hb-green  { background:var(--grn-d);  color:var(--green);  border-color:var(--grn-b) }
+.hb-purple { background:var(--pur-d);  color:var(--purple); border-color:var(--pur-b) }
+.hb-cyan   { background:var(--cyn-d);  color:var(--cyan);   border-color:var(--cyn-b) }
+
+.hero-stats {
+  display:grid; grid-template-rows:repeat(4,1fr); gap:8px; text-align:center;
+}
+.hs { padding:12px 20px; border:1px solid var(--border); border-radius:8px; background:var(--bg2) }.hs-num { font-family:'Syne',sans-serif; font-size:26px; font-weight:800; color:var(--red) }
+.hs-label { font-size:9px; color:var(--text3); letter-spacing:.1em; text-transform:uppercase }
+
+/* ── NAV ── */
+.sticky-nav {
+  position:sticky; top:0; z-index:100;
+  background:rgba(248,249,252,0.95); backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--border);
+  padding:0 48px;
+}
+.nav-inner {
+  display:flex; align-items:center; gap:0;
+  max-width:1400px; margin:0 auto; overflow-x:auto;
+}
+.nav-link {
+  display:block; padding:14px 18px;
+  color:var(--text2); text-decoration:none;
+  font-size:11px; font-weight:500; letter-spacing:.05em;
+  white-space:nowrap; border-bottom:2px solid transparent;
+  transition:all .15s;
+}
+.nav-link:hover { color:var(--text); border-bottom-color:var(--border2) }
+.nav-link.active { color:var(--red); border-bottom-color:var(--red) }
+
+/* ── LAYOUT ── */
+.container { max-width:1400px; margin:0 auto; padding:0 48px }
+.section { padding:52px 0 }
+.section-header { margin-bottom:32px }
+.section-tag {
+  font-size:9px; font-weight:700; letter-spacing:.2em; text-transform:uppercase;
+  color:var(--red); margin-bottom:10px; display:flex; align-items:center; gap:8px;
+}
+.section-tag::after { content:''; flex:1; height:1px; background:var(--border) }
+.section-title {
+  font-family:'Syne',sans-serif; font-size:26px; font-weight:700; letter-spacing:-.02em;
+}
+.section-sub { color:var(--text2); font-size:12px; margin-top:6px }
+.divider { border:none; border-top:1px solid var(--border); margin:52px 0 }
+
+/* ── 40-PIN MAP ── */
+.pinmap-wrap { overflow-x:auto }
+.pinmap {
+  border-collapse:separate; border-spacing:0 2px;
+  font-size:11px; margin:0 auto;
+}
+.pinmap td { padding:1px 3px; vertical-align:middle }
+.pn {
+  width:26px; height:26px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:9px; font-weight:700; cursor:pointer;
+  border:2px solid rgba(255,255,255,0.12); color:#fff;
+  flex-shrink:0; transition:transform .12s, box-shadow .12s;
+}
+.pn:hover { transform:scale(1.18); box-shadow:0 0 10px currentColor }
+.pl {
+  display:inline-flex; align-items:center;
+  padding:3px 9px; border-radius:4px;
+  font-weight:500; font-size:10.5px; white-space:nowrap;
+  cursor:pointer; transition:opacity .12s, transform .12s;
+  border:1px solid transparent;
+}
+.pl:hover { opacity:.75; transform:scale(1.03) }
+.pd { color:var(--text3); font-size:9.5px; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 6px }
+.psep { color:var(--border2); font-size:16px; padding:0 4px }
+/* pin type coloring */
+.pt-PWR33 { background:#fdeaea; color:#b91c1c; border-color:#f5b8b8 }
+.pn-PWR33 { background:#dc2626 }
+.pt-PWR5  { background:#fff0e6; color:#c2410c; border-color:#f5c8a0 }
+.pn-PWR5  { background:#ea580c }
+.pt-GND   { background:var(--bg3); color:var(--text2); border-color:var(--border) }
+.pn-GND   { background:#6b7280 }
+.pt-GPIO  { background:var(--blu-d); color:var(--blue); border-color:var(--blu-b) }
+.pn-GPIO  { background:#2563eb }
+.pt-I2C   { background:var(--grn-d); color:var(--green); border-color:var(--grn-b) }
+.pn-I2C   { background:#16a34a }
+.pt-SPI   { background:var(--orn-d); color:var(--orange); border-color:var(--orn-b) }
+.pn-SPI   { background:#ea580c }
+.pt-UART  { background:var(--yel-d); color:var(--yellow); border-color:var(--yel-b) }
+.pn-UART  { background:#ca8a04 }
+.pt-PWM   { background:var(--pur-d); color:var(--purple); border-color:var(--pur-b) }
+.pn-PWM   { background:#7c3aed }
+.pt-ID    { background:var(--gry-d); color:var(--gray); border-color:var(--gry-b) }
+.pn-ID    { background:#64748b }
+.pt-ONEWIRE { background:var(--cyn-d); color:var(--cyan); border-color:var(--cyn-b) }
+.pn-ONEWIRE { background:#0891b2 }
+
+/* pin details */
+.pin-detail-panel {
+  background:var(--bg2); border:1px solid var(--border);
+  border-left:3px solid var(--red);
+  border-radius:0 8px 8px 0; padding:16px 20px;
+  margin-top:16px; display:none; animation:fadeUp .18s ease;
+}
+.pin-detail-panel.open { display:block }
+.pd-h { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px }
+.pd-badge { padding:4px 11px; border-radius:4px; font-size:12px; font-weight:600 }
+.pd-desc { font-size:11.5px; color:var(--text2); margin-bottom:10px }
+.pd-code {
+  background:var(--bg3); border:1px solid var(--border); border-radius:6px;
+  padding:10px 14px; font-size:11px; color:var(--blue); line-height:2; margin-bottom:12px;
+}
+.alt-grid { display:grid; grid-template-columns:55px repeat(6,1fr); gap:4px; font-size:10px }
+.alt-head { color:var(--text3); font-weight:700; padding:3px 6px }
+.alt-cell { padding:3px 6px; border-radius:3px; font-weight:500 }
+.alt-empty { color:var(--text4) }
+
+/* ── LEGEND ── */
+.legend { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:20px }
+.leg-item {
+  display:inline-flex; align-items:center; gap:5px;
+  padding:4px 10px; border-radius:20px; font-size:10px; font-weight:500;
+  cursor:pointer; border:1px solid transparent; transition:opacity .13s;
+}
+
+/* ── ALT FN TABLE ── */
+.alt-full-table {
+  width:100%; border-collapse:collapse; font-size:11px;
+}
+.alt-full-table th {
+  padding:9px 10px; text-align:left; background:var(--bg3);
+  border-bottom:2px solid var(--border); font-size:9px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--text3); font-weight:600; white-space:nowrap;
+}
+.alt-full-table td { padding:5px 10px; border-bottom:1px solid var(--border); vertical-align:middle; white-space:nowrap }
+.alt-full-table tr:hover td { background:var(--bg3) }
+.chip {
+  display:inline-flex; align-items:center; padding:2px 8px;
+  border-radius:3px; font-size:10px; font-weight:500; white-space:nowrap;
+}
+.ch-uart { background:var(--yel-d); color:var(--yellow) }
+.ch-spi  { background:var(--orn-d); color:var(--orange) }
+.ch-i2c  { background:var(--grn-d); color:var(--green) }
+.ch-pwm  { background:var(--pur-d); color:var(--purple) }
+.ch-pcm  { background:var(--cyn-d); color:var(--cyan) }
+.ch-jtag { background:var(--red-d); color:var(--red) }
+.ch-clk  { background:var(--gry-d); color:var(--gray) }
+.ch-dpi  { background:var(--bg4); color:var(--text3) }
+.ch-none { color:var(--text4) }
+.pull-hi { background:var(--grn-d); color:var(--green); border:1px solid var(--grn-b); display:inline-flex;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700 }
+.pull-lo { background:var(--gry-d); color:var(--gray);  border:1px solid var(--gry-b); display:inline-flex;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700 }
+
+/* ── COMMS CARDS ── */
+.comms-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px }
+.comms-card {
+  background:var(--bg2); border:1px solid var(--border); border-radius:10px;
+  overflow:hidden;
+}
+.cc-header {
+  padding:14px 18px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:10px;
+}
+.cc-icon {
+  width:32px; height:32px; border-radius:6px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:15px; flex-shrink:0; font-weight:700;
+  font-family:'Syne',sans-serif;
+}
+.cc-title { font-family:'Syne',sans-serif; font-size:15px; font-weight:700; margin-bottom:2px }
+.cc-sub { font-size:10px; color:var(--text3) }
+.cc-body { padding:14px 18px }
+.cc-row { display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid var(--border) }
+.cc-row:last-child { border-bottom:none }
+.cc-label { font-size:10px; color:var(--text2) }
+.cc-val { font-size:10.5px; font-weight:600 }
+.cc-pins { padding:10px 18px; border-top:1px solid var(--border); background:var(--bg3) }
+.cc-pin-row { display:flex; align-items:center; gap:6px; padding:3px 0 }
+.cc-pin-name { font-size:9px; font-weight:700; min-width:55px }
+.cc-pin-phys { font-size:9px; color:var(--text3); min-width:55px }
+.cc-pin-desc { font-size:9px; color:var(--text3) }
+.wiring-block {
+  background:var(--bg3); border:1px solid var(--border);
+  border-left:3px solid var(--blue); border-radius:0 6px 6px 0;
+  padding:12px 16px; font-size:11px; color:var(--text2);
+  line-height:2; margin-top:12px;
+}
+.wiring-title { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--blue); margin-bottom:6px }
+
+/* ── QUICK REF ── */
+.qref-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px }
+.qref-card {
+  background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:14px;
+}
+.qref-title { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:var(--text3); margin-bottom:10px }
+.qref-row { display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px solid var(--bg4); font-size:11px }
+.qref-row:last-child { border-bottom:none }
+.qref-key { color:var(--text2) }
+.qref-val { font-weight:500 }
+
+/* ── PULL TABLE ── */
+.pull-table { width:100%; border-collapse:collapse }
+.pull-table th { padding:8px 12px; text-align:left; background:var(--bg3); border-bottom:2px solid var(--border); font-size:9px; letter-spacing:.08em; text-transform:uppercase; color:var(--text3); font-weight:600 }
+.pull-table td { padding:6px 12px; border-bottom:1px solid var(--border); font-size:11px }
+.pull-table tr:hover td { background:var(--bg3) }
+
+/* ── PERIPHERAL PERIPH SECTION ── */
+.periph-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px }
+.periph-card {
+  background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:16px;
+  border-top:2px solid;
+}
+.periph-card h3 { font-family:'Syne',sans-serif; font-size:14px; font-weight:700; margin-bottom:8px }
+.periph-card p { font-size:11px; color:var(--text2); line-height:1.7; margin-bottom:8px }
+.periph-card ul { padding-left:0; list-style:none }
+.periph-card ul li { font-size:10.5px; color:var(--text2); padding:2px 0; padding-left:14px; position:relative }
+.periph-card ul li::before { content:'→'; position:absolute; left:0; color:var(--text3) }
+.periph-card code { background:var(--bg3); padding:1px 6px; border-radius:3px; color:var(--blue); font-size:10px }
+
+/* ── TIMING TABLE ── */
+.timing-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px }
+.timing-card { background:var(--bg2); border:1px solid var(--border); border-radius:8px; overflow:hidden }
+.tc-hdr { padding:10px 14px; background:var(--bg3); border-bottom:1px solid var(--border); font-size:11px; font-weight:600 }
+.tc-row { display:flex; justify-content:space-between; padding:5px 14px; border-bottom:1px solid var(--bg4); font-size:11px }
+.tc-row:last-child { border-bottom:none }
+.tc-k { color:var(--text2) }
+.tc-v { font-weight:600 }
+
+/* ── CODE BLOCKS ── */
+.code-block {
+  background:var(--bg3); border:1px solid var(--border); border-radius:8px;
+  padding:16px 18px; overflow-x:auto; margin:12px 0; position:relative;
+}
+.code-block pre { font-size:11.5px; line-height:1.8; color:var(--text2) }
+.code-comment { color:var(--text4) }
+.code-keyword { color:var(--purple) }
+.code-string  { color:var(--green) }
+.code-number  { color:var(--orange) }
+.code-fn      { color:var(--blue) }
+.code-tag     { font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--text3); margin-bottom:8px }
+
+/* ── FOOTER ── */
+footer {
+  border-top:1px solid var(--border); padding:30px 48px;
+  background:var(--bg3); font-size:10.5px; color:var(--text3);
+}
+.footer-grid { display:grid; grid-template-columns:1fr auto; gap:20px; max-width:1400px; margin:0 auto; align-items:center }
+.footer-links { display:flex; gap:20px; flex-wrap:wrap }
+.footer-links a { color:var(--text3); text-decoration:none }
+.footer-links a:hover { color:var(--text) }
+
+/* ── UTILS ── */
+@keyframes fadeUp { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+.badge {
+  display:inline-flex; align-items:center; padding:2px 8px; border-radius:3px;
+  font-size:10px; font-weight:600;
+}
+.tip-box {
+  background:var(--blu-d); border:1px solid var(--blu-b); border-radius:6px;
+  padding:10px 14px; font-size:11.5px; color:#1a3a8a; margin:12px 0;
+}
+.warn-box {
+  background:var(--yel-d); border:1px solid var(--yel-b); border-radius:6px;
+  padding:10px 14px; font-size:11.5px; color:#6a5000; margin:12px 0;
+}
+.danger-box {
+  background:var(--red-d); border:1px solid var(--red-b); border-radius:6px;
+  padding:10px 14px; font-size:11.5px; color:#8a1a1a; margin:12px 0;
+}
+.grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:20px }
+@media(max-width:768px) { .grid-2,.hero-grid { grid-template-columns:1fr } .hero{padding:32px 20px} .container{padding:0 20px} .sticky-nav{padding:0 20px} .hero-stats{grid-template-rows:auto;grid-template-columns:repeat(4,1fr)} }
+</style>
+</head>
+<body>
+
+<!-- ═══════════ HERO ═══════════ -->
+<section class="hero">
+  <div class="hero-grid">
+    <div>
+      <div class="hero-eyebrow">Complete Hardware Reference</div>
+      <h1 class="hero-title">Raspberry Pi 4<br><span>GPIO & Peripherals</span></h1>
+      <p class="hero-sub">Full 40-pin pinout, alternate functions, pull states, I2C · SPI · UART · PWM · 1-Wire reference. Based on the BCM2711 datasheet and Raspberry Pi 4 Model B documentation.</p>
+      <div class="hero-badges">
+        <span class="hb hb-red">BCM2711</span>
+        <span class="hb hb-blue">40-Pin Header</span>
+        <span class="hb hb-green">28 User GPIOs</span>
+        <span class="hb hb-purple">6 ALT Modes</span>
+        <span class="hb hb-cyan">RP-008341-DS Rev 1.1</span>
+      </div>
+    </div>
+    <div class="hero-stats">
+      <div class="hs"><div class="hs-num">40</div><div class="hs-label">Total Pins</div></div>
+      <div class="hs"><div class="hs-num">28</div><div class="hs-label">User GPIOs</div></div>
+      <div class="hs"><div class="hs-num">6</div><div class="hs-label">ALT Modes</div></div>
+      <div class="hs"><div class="hs-num">7</div><div class="hs-label">SPI Buses</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ NAV ═══════════ -->
+<nav class="sticky-nav">
+  <div class="nav-inner">
+    <a class="nav-link active" href="#pinmap">40-Pin Map</a>
+    <a class="nav-link" href="#altfn">Alt Functions</a>
+    <a class="nav-link" href="#pulls">Pull States</a>
+    <a class="nav-link" href="#i2c">I2C</a>
+    <a class="nav-link" href="#spi">SPI</a>
+    <a class="nav-link" href="#uart">UART</a>
+    <a class="nav-link" href="#pwm">PWM</a>
+    <a class="nav-link" href="#onewire">1-Wire</a>
+    <a class="nav-link" href="#periph">Peripherals</a>
+    <a class="nav-link" href="#code">Code Examples</a>
+    <a class="nav-link" href="#quickref">Quick Ref</a>
+  </div>
+</nav>
+
+<!-- ═══════════ 40-PIN MAP ═══════════ -->
+<div id="pinmap" class="section">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">Header Pinout <span></span></div>
+      <h2 class="section-title">40-Pin GPIO Map</h2>
+      <p class="section-sub">Click any pin label or number for full details including alternate functions and Python code</p>
+    </div>
+
+    <div class="legend" id="legend"></div>
+
+    <div class="pinmap-wrap">
+      <table class="pinmap" id="pinmap-table"></table>
+    </div>
+
+    <div class="pin-detail-panel" id="pin-detail"></div>
+
+    <div class="tip-box" style="margin-top:16px">
+      💡 <strong>Orientation:</strong> Pin 1 (3.3V) is at the top-left when the Pi is oriented with USB ports facing right and the GPIO header at the top. Odd pins = left column, even pins = right column.
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ═══════════ ALT FUNCTIONS ═══════════ -->
+<div id="altfn" class="section">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">BCM2711 Datasheet Table 5 <span></span></div>
+      <h2 class="section-title">Alternate Functions</h2>
+      <p class="section-sub">All 28 user GPIOs · ALT0–ALT5 · Source: RP-008341-DS Release 1.1, March 2024 · © Raspberry Pi (Trading) Ltd.</p>
+    </div>
+
+    <div style="overflow-x:auto; border:1px solid var(--border); border-radius:10px">
+      <table class="alt-full-table" id="alt-table"></table>
+    </div>
+
+    <div style="margin-top:16px; display:flex; flex-wrap:wrap; gap:8px; font-size:10px; align-items:center">
+      <span style="color:var(--text3); margin-right:4px">Colour key:</span>
+      <span class="chip ch-uart">UART/PCM</span>
+      <span class="chip ch-spi">SPI</span>
+      <span class="chip ch-i2c">I2C</span>
+      <span class="chip ch-pwm">PWM</span>
+      <span class="chip ch-pcm">PCM/CLK</span>
+      <span class="chip ch-jtag">ARM JTAG</span>
+      <span class="chip ch-clk">GPCLK</span>
+      <span class="chip ch-dpi">DPI/SD/SA</span>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ═══════════ PULL STATES ═══════════ -->
+<div id="pulls" class="section">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">Default Power-On State <span></span></div>
+      <h2 class="section-title">Pull-up / Pull-down States</h2>
+      <p class="section-sub">Default pull resistor state on BCM2711 at power-on. Can be overridden in software at any time.</p>
+    </div>
+    <div class="grid-2">
+      <div>
+        <div class="tip-box">
+          <strong>Pull-UP (HIGH by default)</strong><br>
+          Pin reads HIGH when floating. Used for I2C (SDA/SCL), active-LOW signals, buttons with external pull-up. BCM2711 pull-up is ~50 kΩ internally. I2C header pins have board-level 1.8 kΩ pull-ups.
+        </div>
+        <div class="warn-box">
+          <strong>Pull-DOWN (LOW by default)</strong><br>
+          Pin reads LOW when floating. Majority of GPIOs. Suitable for active-HIGH sensors. Override: <code style="background:rgba(255,255,255,0.1);padding:1px 5px;border-radius:3px">GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)</code>
+        </div>
+        <div class="danger-box">
+          <strong>⚠ 3.3V Logic Only</strong><br>
+          ALL GPIO pins are 3.3V logic — NOT 5V tolerant. Connecting 5V directly will damage the BCM2711. Use a level shifter for 5V peripherals.
+        </div>
+      </div>
+      <div style="overflow-x:auto; border:1px solid var(--border); border-radius:8px">
+        <table class="pull-table" id="pull-table"></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ═══════════ COMMUNICATIONS ═══════════ -->
+<div id="i2c" class="section">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">Serial Communications <span></span></div>
+      <h2 class="section-title">I2C — Inter-Integrated Circuit</h2>
+      <p class="section-sub">BCM2711 provides 7 I2C buses. I2C1 (bus 1) is exposed on the 40-pin header at Pins 3 and 5.</p>
+    </div>
+    <div class="comms-grid">
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--grn-d);color:var(--green)">I2</div>
+          <div><div class="cc-title">I2C Basics</div><div class="cc-sub">Two-wire synchronous serial</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">Wires</span><span class="cc-val">2 (SDA + SCL)</span></div>
+          <div class="cc-row"><span class="cc-label">Topology</span><span class="cc-val">Multi-master / multi-slave</span></div>
+          <div class="cc-row"><span class="cc-label">Standard speed</span><span class="cc-val">100 kHz</span></div>
+          <div class="cc-row"><span class="cc-label">Fast mode</span><span class="cc-val">400 kHz</span></div>
+          <div class="cc-row"><span class="cc-label">Fast+ mode</span><span class="cc-val">1 MHz</span></div>
+          <div class="cc-row"><span class="cc-label">Addresses</span><span class="cc-val">7-bit (128) or 10-bit</span></div>
+          <div class="cc-row"><span class="cc-label">BCM2711 buses</span><span class="cc-val">7 (I2C0–I2C6)</span></div>
+          <div class="cc-row"><span class="cc-label">Header bus</span><span class="cc-val">I2C1 (Bus 1)</span></div>
+        </div>
+        <div class="cc-pins">
+          <div class="cc-pin-row">
+            <span class="chip ch-i2c cc-pin-name">SDA1</span>
+            <span class="cc-pin-phys">BCM2 · Pin 3</span>
+            <span class="cc-pin-desc">Data · 1.8kΩ board pull-up</span>
+          </div>
+          <div class="cc-pin-row">
+            <span class="chip ch-i2c cc-pin-name">SCL1</span>
+            <span class="cc-pin-phys">BCM3 · Pin 5</span>
+            <span class="cc-pin-desc">Clock · 1.8kΩ board pull-up</span>
+          </div>
+          <div class="cc-pin-row">
+            <span class="chip ch-none cc-pin-name">SDA0</span>
+            <span class="cc-pin-phys">BCM0 · Pin 27</span>
+            <span class="cc-pin-desc">HAT EEPROM — reserved</span>
+          </div>
+          <div class="cc-pin-row">
+            <span class="chip ch-none cc-pin-name">SCL0</span>
+            <span class="cc-pin-phys">BCM1 · Pin 28</span>
+            <span class="cc-pin-desc">HAT EEPROM — reserved</span>
+          </div>
+        </div>
+      </div>
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--grn-d);color:var(--green)">I2</div>
+          <div><div class="cc-title">Enable & Scan</div><div class="cc-sub">Setup commands and diagnostics</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="wiring-block">
+            <div class="wiring-title">Enable I2C</div>
+            sudo raspi-config<br>
+            → Interface Options → I2C → Yes<br><br>
+            <span style="color:var(--text3)"># or add to /boot/config.txt:</span><br>
+            dtparam=i2c_arm=on
+          </div>
+          <div class="wiring-block">
+            <div class="wiring-title">Scan for devices</div>
+            sudo apt install i2c-tools<br>
+            i2cdetect -y 1<br><br>
+            <span style="color:var(--text3)"># Read register 0x75 from device at 0x68:</span><br>
+            i2cget -y 1 0x68 0x75
+          </div>
+        </div>
+      </div>
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--grn-d);color:var(--green)">I2</div>
+          <div><div class="cc-title">I2C Bus Map</div><div class="cc-sub">All BCM2711 I2C buses</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">I2C0</span><span class="cc-val">HAT EEPROM (GPIO0/1)</span></div>
+          <div class="cc-row"><span class="cc-label">I2C1</span><span class="cc-val cc-val" style="color:var(--green)">Header Pins 3+5 ← use this</span></div>
+          <div class="cc-row"><span class="cc-label">I2C2</span><span class="cc-val">HDMI DDC</span></div>
+          <div class="cc-row"><span class="cc-label">I2C3</span><span class="cc-val">ALT mux (GPIO2/3/4/5)</span></div>
+          <div class="cc-row"><span class="cc-label">I2C4</span><span class="cc-val">ALT mux (GPIO7/8/9)</span></div>
+          <div class="cc-row"><span class="cc-label">I2C5</span><span class="cc-val">ALT mux (GPIO10/11/12/13)</span></div>
+          <div class="cc-row"><span class="cc-label">I2C6</span><span class="cc-val">ALT mux (GPIO0/1/22/23)</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SPI -->
+<div id="spi" class="section" style="padding-top:0">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">Serial Communications <span></span></div>
+      <h2 class="section-title">SPI — Serial Peripheral Interface</h2>
+      <p class="section-sub">BCM2711 has 7 SPI buses (SPI0–SPI6). SPI0 is wired to header pins. SPI1–6 via ALT mux.</p>
+    </div>
+    <div class="comms-grid">
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--orn-d);color:var(--orange)">SPI</div>
+          <div><div class="cc-title">SPI0 Header Pins</div><div class="cc-sub">Main SPI bus on 40-pin header</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">Type</span><span class="cc-val">Synchronous full-duplex</span></div>
+          <div class="cc-row"><span class="cc-label">Wires</span><span class="cc-val">4 (MOSI, MISO, SCLK, CE)</span></div>
+          <div class="cc-row"><span class="cc-label">Max speed</span><span class="cc-val">125 MHz (div of 250 MHz)</span></div>
+          <div class="cc-row"><span class="cc-label">Modes</span><span class="cc-val">CPOL/CPHA 0,1,2,3</span></div>
+          <div class="cc-row"><span class="cc-label">Chip enables</span><span class="cc-val">CE0 (GPIO8) · CE1 (GPIO7)</span></div>
+          <div class="cc-row"><span class="cc-label">CE polarity</span><span class="cc-val">Active LOW</span></div>
+        </div>
+        <div class="cc-pins">
+          <div class="cc-pin-row"><span class="chip ch-spi cc-pin-name">MOSI</span><span class="cc-pin-phys">GPIO10 · Pin 19</span><span class="cc-pin-desc">Master Out Slave In</span></div>
+          <div class="cc-pin-row"><span class="chip ch-spi cc-pin-name">MISO</span><span class="cc-pin-phys">GPIO9  · Pin 21</span><span class="cc-pin-desc">Master In Slave Out</span></div>
+          <div class="cc-pin-row"><span class="chip ch-spi cc-pin-name">SCLK</span><span class="cc-pin-phys">GPIO11 · Pin 23</span><span class="cc-pin-desc">Clock</span></div>
+          <div class="cc-pin-row"><span class="chip ch-spi cc-pin-name">CE0</span><span class="cc-pin-phys">GPIO8  · Pin 24</span><span class="cc-pin-desc">Chip enable 0 (active LOW)</span></div>
+          <div class="cc-pin-row"><span class="chip ch-spi cc-pin-name">CE1</span><span class="cc-pin-phys">GPIO7  · Pin 26</span><span class="cc-pin-desc">Chip enable 1 (active LOW)</span></div>
+        </div>
+      </div>
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--orn-d);color:var(--orange)">SPI</div>
+          <div><div class="cc-title">SPI Bus Map</div><div class="cc-sub">All 7 BCM2711 SPI buses</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">SPI0</span><span class="cc-val" style="color:var(--orange)">Header Pins (GPIO8-11) ← use</span></div>
+          <div class="cc-row"><span class="cc-label">SPI1</span><span class="cc-val">GPIO16-21 (ALT4)</span></div>
+          <div class="cc-row"><span class="cc-label">SPI2</span><span class="cc-val">Not accessible on header</span></div>
+          <div class="cc-row"><span class="cc-label">SPI3</span><span class="cc-val">GPIO0/1/2/3/4 (ALT3)</span></div>
+          <div class="cc-row"><span class="cc-label">SPI4</span><span class="cc-val">GPIO4/5/6/7/8 (ALT3)</span></div>
+          <div class="cc-row"><span class="cc-label">SPI5</span><span class="cc-val">GPIO12/13/14/15/16 (ALT3)</span></div>
+          <div class="cc-row"><span class="cc-label">SPI6</span><span class="cc-val">GPIO18/19/20/21 (ALT3)</span></div>
+          <div class="wiring-block" style="margin-top:10px">
+            <div class="wiring-title">Enable SPI</div>
+            sudo raspi-config<br>
+            → Interface Options → SPI → Yes<br><br>
+            <span style="color:var(--text3)"># or /boot/config.txt:</span><br>
+            dtparam=spi=on<br><br>
+            <span style="color:var(--text3)"># Loopback test (MOSI → MISO):</span><br>
+            pip install spidev
+          </div>
+        </div>
+      </div>
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--orn-d);color:var(--orange)">SPI</div>
+          <div><div class="cc-title">SPI Modes</div><div class="cc-sub">Clock polarity and phase</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">Mode 0</span><span class="cc-val">CPOL=0 CPHA=0 (most common)</span></div>
+          <div class="cc-row"><span class="cc-label">Mode 1</span><span class="cc-val">CPOL=0 CPHA=1</span></div>
+          <div class="cc-row"><span class="cc-label">Mode 2</span><span class="cc-val">CPOL=1 CPHA=0</span></div>
+          <div class="cc-row"><span class="cc-label">Mode 3</span><span class="cc-val">CPOL=1 CPHA=1</span></div>
+          <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--border)">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:6px">CPOL: clock idle state &nbsp;|&nbsp; CPHA: data capture edge</div>
+            <div class="cc-row"><span class="cc-label">CPOL=0</span><span class="cc-val">Clock idles LOW</span></div>
+            <div class="cc-row"><span class="cc-label">CPOL=1</span><span class="cc-val">Clock idles HIGH</span></div>
+            <div class="cc-row"><span class="cc-label">CPHA=0</span><span class="cc-val">Sample on leading edge</span></div>
+            <div class="cc-row"><span class="cc-label">CPHA=1</span><span class="cc-val">Sample on trailing edge</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- UART -->
+<div id="uart" class="section" style="padding-top:0">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">Serial Communications <span></span></div>
+      <h2 class="section-title">UART — Universal Async Receiver-Transmitter</h2>
+      <p class="section-sub">BCM2711 has 6 UARTs (UART0–UART5). UART0 is a full PL011; UART1 is the mini-UART.</p>
+    </div>
+    <div class="comms-grid">
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--yel-d);color:var(--yellow)">TX</div>
+          <div><div class="cc-title">Header UART Pins</div><div class="cc-sub">GPIO14/15 — default serial port</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">Protocol</span><span class="cc-val">Async, no shared clock</span></div>
+          <div class="cc-row"><span class="cc-label">Default baud</span><span class="cc-val">115200 bps</span></div>
+          <div class="cc-row"><span class="cc-label">Baud range</span><span class="cc-val">300 – 4 Mbps</span></div>
+          <div class="cc-row"><span class="cc-label">UART0 (/dev/ttyAMA0)</span><span class="cc-val">Full PL011 ← preferred</span></div>
+          <div class="cc-row"><span class="cc-label">UART1 (/dev/ttyS0)</span><span class="cc-val">Mini-UART (baud vs CPU)</span></div>
+          <div class="cc-row"><span class="cc-label">Console overlay</span><span class="cc-val">Disable for device use</span></div>
+        </div>
+        <div class="cc-pins">
+          <div class="cc-pin-row"><span class="chip ch-uart cc-pin-name">TXD0</span><span class="cc-pin-phys">GPIO14 · Pin 8</span><span class="cc-pin-desc">Transmit</span></div>
+          <div class="cc-pin-row"><span class="chip ch-uart cc-pin-name">RXD0</span><span class="cc-pin-phys">GPIO15 · Pin 10</span><span class="cc-pin-desc">Receive</span></div>
+        </div>
+      </div>
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--yel-d);color:var(--yellow)">TX</div>
+          <div><div class="cc-title">UART Bus Map</div><div class="cc-sub">All 6 BCM2711 UARTs</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">UART0</span><span class="cc-val" style="color:var(--yellow)">GPIO14/15 (ALT0) — PL011</span></div>
+          <div class="cc-row"><span class="cc-label">UART1</span><span class="cc-val">GPIO14/15 (ALT5) — mini</span></div>
+          <div class="cc-row"><span class="cc-label">UART2</span><span class="cc-val">GPIO0/1 (ALT4)</span></div>
+          <div class="cc-row"><span class="cc-label">UART3</span><span class="cc-val">GPIO4/5 (ALT4)</span></div>
+          <div class="cc-row"><span class="cc-label">UART4</span><span class="cc-val">GPIO8/9 (ALT4)</span></div>
+          <div class="cc-row"><span class="cc-label">UART5</span><span class="cc-val">GPIO12/13/14/15 (ALT4)</span></div>
+          <div class="wiring-block" style="margin-top:10px">
+            <div class="wiring-title">Setup — disable serial console</div>
+            sudo raspi-config<br>
+            → Interface → Serial Port<br>
+            → Login shell: <strong>No</strong><br>
+            → Serial port hardware: <strong>Yes</strong>
+          </div>
+        </div>
+      </div>
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--yel-d);color:var(--yellow)">TX</div>
+          <div><div class="cc-title">Loopback test</div><div class="cc-sub">Verify UART hardware</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="danger-box">⚠ Cross TX→RX: Pin 8 ↔ Pin 10</div>
+          <div class="wiring-block">
+            <div class="wiring-title">Python loopback</div>
+            import serial<br>
+            ser = serial.Serial(<span style="color:var(--green)">'/dev/serial0'</span>, <span style="color:var(--orange)">9600</span>, timeout=<span style="color:var(--orange)">2</span>)<br>
+            ser.write(b<span style="color:var(--green)">'HELLO'</span>)<br>
+            print(ser.read(<span style="color:var(--orange)">5</span>))  <span style="color:var(--text4)"># → b'HELLO'</span>
+          </div>
+          <div class="cc-row" style="margin-top:8px"><span class="cc-label">device (UART0)</span><span class="cc-val">/dev/serial0 or /dev/ttyAMA0</span></div>
+          <div class="cc-row"><span class="cc-label">device (UART1)</span><span class="cc-val">/dev/ttyS0</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PWM -->
+<div id="pwm" class="section" style="padding-top:0">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">PWM & Audio <span></span></div>
+      <h2 class="section-title">PWM — Pulse Width Modulation</h2>
+      <p class="section-sub">BCM2711 has 2 hardware PWM channels (PWM0 and PWM1). Multiple GPIO pins can route to each channel via ALT modes.</p>
+    </div>
+    <div class="comms-grid">
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--pur-d);color:var(--purple)">PWM</div>
+          <div><div class="cc-title">Hardware PWM Pins</div><div class="cc-sub">True hardware-timed PWM</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">Channels</span><span class="cc-val">2 (PWM0, PWM1)</span></div>
+          <div class="cc-row"><span class="cc-label">Frequency range</span><span class="cc-val">~1 Hz – 125 MHz</span></div>
+          <div class="cc-row"><span class="cc-label">Resolution</span><span class="cc-val">12-bit (0–4096 range)</span></div>
+          <div class="cc-row"><span class="cc-label">Clock source</span><span class="cc-val">19.2 MHz oscillator</span></div>
+          <div class="cc-row"><span class="cc-label">Servo frequency</span><span class="cc-val">50 Hz standard</span></div>
+          <div class="cc-row"><span class="cc-label">Servo range</span><span class="cc-val">1000–2000 µs pulse</span></div>
+        </div>
+        <div class="cc-pins">
+          <div class="cc-pin-row"><span class="chip ch-pwm cc-pin-name">PWM0</span><span class="cc-pin-phys">GPIO18 · Pin 12 (ALT5)</span><span class="cc-pin-desc">Channel 0 ← main</span></div>
+          <div class="cc-pin-row"><span class="chip ch-pwm cc-pin-name">PWM0</span><span class="cc-pin-phys">GPIO12 · Pin 32 (ALT0)</span><span class="cc-pin-desc">Channel 0 alternate</span></div>
+          <div class="cc-pin-row"><span class="chip ch-pwm cc-pin-name">PWM1</span><span class="cc-pin-phys">GPIO13 · Pin 33 (ALT0)</span><span class="cc-pin-desc">Channel 1</span></div>
+          <div class="cc-pin-row"><span class="chip ch-pwm cc-pin-name">PWM1</span><span class="cc-pin-phys">GPIO19 · Pin 35 (ALT5)</span><span class="cc-pin-desc">Channel 1 alternate</span></div>
+        </div>
+      </div>
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--pur-d);color:var(--purple)">PCM</div>
+          <div><div class="cc-title">PCM / I2S Audio</div><div class="cc-sub">Digital audio interface</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">Protocol</span><span class="cc-val">I2S / PCM digital audio</span></div>
+          <div class="cc-row"><span class="cc-label">Format</span><span class="cc-val">Stereo L+R channels</span></div>
+          <div class="cc-row"><span class="cc-label">Bit depth</span><span class="cc-val">Up to 32-bit</span></div>
+          <div class="cc-row"><span class="cc-label">Sample rates</span><span class="cc-val">8kHz – 192kHz</span></div>
+        </div>
+        <div class="cc-pins">
+          <div class="cc-pin-row"><span class="chip ch-pcm cc-pin-name">PCM_CLK</span><span class="cc-pin-phys">GPIO18 · Pin 12</span><span class="cc-pin-desc">Bit clock (ALT0)</span></div>
+          <div class="cc-pin-row"><span class="chip ch-pcm cc-pin-name">PCM_FS</span><span class="cc-pin-phys">GPIO19 · Pin 35</span><span class="cc-pin-desc">Frame sync / L-R (ALT0)</span></div>
+          <div class="cc-pin-row"><span class="chip ch-pcm cc-pin-name">PCM_DIN</span><span class="cc-pin-phys">GPIO20 · Pin 38</span><span class="cc-pin-desc">Data in (ALT0)</span></div>
+          <div class="cc-pin-row"><span class="chip ch-pcm cc-pin-name">PCM_DOUT</span><span class="cc-pin-phys">GPIO21 · Pin 40</span><span class="cc-pin-desc">Data out (ALT0)</span></div>
+        </div>
+      </div>
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--gry-d);color:var(--gray)">CLK</div>
+          <div><div class="cc-title">General Purpose Clocks</div><div class="cc-sub">GPCLK0, GPCLK1, GPCLK2</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">Channels</span><span class="cc-val">3 (GPCLK0, 1, 2)</span></div>
+          <div class="cc-row"><span class="cc-label">Sources</span><span class="cc-val">Oscillator, PLLA, PLLD, HDMI</span></div>
+          <div class="cc-row"><span class="cc-label">Use case</span><span class="cc-val">External clock output, audio MCLK</span></div>
+        </div>
+        <div class="cc-pins">
+          <div class="cc-pin-row"><span class="chip ch-clk cc-pin-name">GPCLK0</span><span class="cc-pin-phys">GPIO4  · Pin 7  (ALT0)</span></div>
+          <div class="cc-pin-row"><span class="chip ch-clk cc-pin-name">GPCLK0</span><span class="cc-pin-phys">GPIO20 · Pin 38 (ALT5)</span></div>
+          <div class="cc-pin-row"><span class="chip ch-clk cc-pin-name">GPCLK1</span><span class="cc-pin-phys">GPIO5  · Pin 29 (ALT0)</span></div>
+          <div class="cc-pin-row"><span class="chip ch-clk cc-pin-name">GPCLK1</span><span class="cc-pin-phys">GPIO21 · Pin 40 (ALT5)</span></div>
+          <div class="cc-pin-row"><span class="chip ch-clk cc-pin-name">GPCLK2</span><span class="cc-pin-phys">GPIO6  · Pin 31 (ALT0)</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 1-Wire -->
+<div id="onewire" class="section" style="padding-top:0">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">Temperature Sensing <span></span></div>
+      <h2 class="section-title">1-Wire — DS18B20 Temperature Sensor</h2>
+      <p class="section-sub">Dallas 1-Wire protocol is implemented in kernel software on GPIO4 by default. Supports multiple sensors on one pin.</p>
+    </div>
+    <div class="comms-grid">
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--cyn-d);color:var(--cyan)">1W</div>
+          <div><div class="cc-title">1-Wire Protocol</div><div class="cc-sub">Single-wire, parasitic or VCC power</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="cc-row"><span class="cc-label">Pin</span><span class="cc-val" style="color:var(--cyan)">GPIO4 (Pin 7) — default</span></div>
+          <div class="cc-row"><span class="cc-label">Pull-up</span><span class="cc-val">4.7 kΩ to 3.3V (external)</span></div>
+          <div class="cc-row"><span class="cc-label">Parasitic mode</span><span class="cc-val">2-wire (DATA + GND only)</span></div>
+          <div class="cc-row"><span class="cc-label">Normal mode</span><span class="cc-val">3-wire (VCC + DATA + GND)</span></div>
+          <div class="cc-row"><span class="cc-label">Protocol speed</span><span class="cc-val">Standard: 15.4 kbps</span></div>
+          <div class="cc-row"><span class="cc-label">Overdrive</span><span class="cc-val">125 kbps</span></div>
+          <div class="cc-row"><span class="cc-label">Temp accuracy</span><span class="cc-val">±0.5°C (–10°C to +85°C)</span></div>
+          <div class="cc-row"><span class="cc-label">Temp resolution</span><span class="cc-val">9–12 bit (configurable)</span></div>
+          <div class="cc-row"><span class="cc-label">Conversion time</span><span class="cc-val">750ms @ 12-bit</span></div>
+          <div class="cc-row"><span class="cc-label">Sensors/bus</span><span class="cc-val">Multiple (unique 64-bit ID)</span></div>
+        </div>
+      </div>
+      <div class="comms-card">
+        <div class="cc-header">
+          <div class="cc-icon" style="background:var(--cyn-d);color:var(--cyan)">1W</div>
+          <div><div class="cc-title">Wiring &amp; Setup</div><div class="cc-sub">DS18B20 connections</div></div>
+        </div>
+        <div class="cc-body">
+          <div class="wiring-block">
+            <div class="wiring-title">DS18B20 Wiring (3-wire)</div>
+            VCC  → 3.3V (Pin 1)<br>
+            GND  → GND  (Pin 6)<br>
+            DATA → GPIO4 (Pin 7)<br>
+            4.7kΩ between VCC and DATA
+          </div>
+          <div class="wiring-block">
+            <div class="wiring-title">Enable 1-Wire kernel driver</div>
+            sudo raspi-config<br>
+            → Interface Options → 1-Wire → Yes → Reboot<br><br>
+            <span style="color:var(--text3)"># or /boot/config.txt:</span><br>
+            dtoverlay=w1-gpio,gpiopin=4<br><br>
+            <span style="color:var(--text3)"># Verify:</span><br>
+            ls /sys/bus/w1/devices/<br>
+            cat /sys/bus/w1/devices/28-*/w1_slave
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ═══════════ PERIPHERALS ═══════════ -->
+<div id="periph" class="section">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">BCM2711 Peripheral Summary <span></span></div>
+      <h2 class="section-title">All Peripheral Blocks</h2>
+      <p class="section-sub">Full peripheral inventory of the BCM2711 SoC as used in Raspberry Pi 4 Model B</p>
+    </div>
+    <div class="periph-grid" id="periph-grid"></div>
+
+    <div style="margin-top:24px">
+      <div class="section-header"><h2 class="section-title" style="font-size:20px">Signal Timing Reference</h2></div>
+      <div class="timing-grid">
+        <div class="timing-card">
+          <div class="tc-hdr">I2C Timing</div>
+          <div class="tc-row"><span class="tc-k">Standard mode</span><span class="tc-v">100 kHz</span></div>
+          <div class="tc-row"><span class="tc-k">Fast mode</span><span class="tc-v">400 kHz</span></div>
+          <div class="tc-row"><span class="tc-k">Fast+ mode</span><span class="tc-v">1 MHz</span></div>
+          <div class="tc-row"><span class="tc-k">Bit time @ 100kHz</span><span class="tc-v">10 µs</span></div>
+          <div class="tc-row"><span class="tc-k">Pull-up (board)</span><span class="tc-v">1.8 kΩ</span></div>
+        </div>
+        <div class="timing-card">
+          <div class="tc-hdr">SPI Timing</div>
+          <div class="tc-row"><span class="tc-k">Max clock</span><span class="tc-v">125 MHz</span></div>
+          <div class="tc-row"><span class="tc-k">Clock divisor</span><span class="tc-v">250 MHz / n (even)</span></div>
+          <div class="tc-row"><span class="tc-k">Default</span><span class="tc-v">500 kHz</span></div>
+          <div class="tc-row"><span class="tc-k">CE setup hold</span><span class="tc-v">1 clock cycle</span></div>
+          <div class="tc-row"><span class="tc-k">CE polarity</span><span class="tc-v">Active LOW</span></div>
+        </div>
+        <div class="timing-card">
+          <div class="tc-hdr">UART Timing</div>
+          <div class="tc-row"><span class="tc-k">Common baud</span><span class="tc-v">9600, 115200, 230400</span></div>
+          <div class="tc-row"><span class="tc-k">Max baud (UART0)</span><span class="tc-v">~4 Mbps</span></div>
+          <div class="tc-row"><span class="tc-k">Frame format</span><span class="tc-v">8N1, 8E1, 8O1…</span></div>
+          <div class="tc-row"><span class="tc-k">Start bit</span><span class="tc-v">1 bit (LOW)</span></div>
+          <div class="tc-row"><span class="tc-k">Stop bit</span><span class="tc-v">1 or 2 bits (HIGH)</span></div>
+        </div>
+        <div class="timing-card">
+          <div class="tc-hdr">PWM / Servo Timing</div>
+          <div class="tc-row"><span class="tc-k">Servo frequency</span><span class="tc-v">50 Hz (20 ms period)</span></div>
+          <div class="tc-row"><span class="tc-k">Servo 0°</span><span class="tc-v">1.0 ms pulse</span></div>
+          <div class="tc-row"><span class="tc-k">Servo 90°</span><span class="tc-v">1.5 ms pulse</span></div>
+          <div class="tc-row"><span class="tc-k">Servo 180°</span><span class="tc-v">2.0 ms pulse</span></div>
+          <div class="tc-row"><span class="tc-k">LED PWM freq</span><span class="tc-v">1 kHz typical</span></div>
+        </div>
+        <div class="timing-card">
+          <div class="tc-hdr">GPIO Electrical</div>
+          <div class="tc-row"><span class="tc-k">Logic voltage</span><span class="tc-v">3.3V (NOT 5V tolerant)</span></div>
+          <div class="tc-row"><span class="tc-k">Max output</span><span class="tc-v">16 mA per pin</span></div>
+          <div class="tc-row"><span class="tc-k">Max total</span><span class="tc-v">50 mA (all GPIO combined)</span></div>
+          <div class="tc-row"><span class="tc-k">Input HIGH threshold</span><span class="tc-v">&gt; 1.6V</span></div>
+          <div class="tc-row"><span class="tc-k">Internal pull R</span><span class="tc-v">~50 kΩ</span></div>
+        </div>
+        <div class="timing-card">
+          <div class="tc-hdr">1-Wire Timing</div>
+          <div class="tc-row"><span class="tc-k">Standard speed</span><span class="tc-v">15.4 kbps</span></div>
+          <div class="tc-row"><span class="tc-k">Overdrive speed</span><span class="tc-v">125 kbps</span></div>
+          <div class="tc-row"><span class="tc-k">Reset pulse</span><span class="tc-v">480 µs LOW</span></div>
+          <div class="tc-row"><span class="tc-k">DS18B20 convert</span><span class="tc-v">750 ms @ 12-bit</span></div>
+          <div class="tc-row"><span class="tc-k">Pull-up required</span><span class="tc-v">4.7 kΩ to 3.3V</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ═══════════ CODE EXAMPLES ═══════════ -->
+<div id="code" class="section">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">Python Code <span></span></div>
+      <h2 class="section-title">Code Examples</h2>
+      <p class="section-sub">Quick-start snippets using RPi.GPIO, smbus2, spidev, pyserial, and gpiozero</p>
+    </div>
+    <div class="grid-2">
+
+      <div>
+        <div class="code-tag">GPIO — RPi.GPIO</div>
+        <div class="code-block"><pre><span class="code-keyword">import</span> RPi.GPIO <span class="code-keyword">as</span> GPIO
+<span class="code-keyword">import</span> time
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(<span class="code-keyword">False</span>)
+
+<span class="code-comment"># Output — blink LED on GPIO18</span>
+GPIO.setup(<span class="code-number">18</span>, GPIO.OUT)
+<span class="code-keyword">for</span> _ <span class="code-keyword">in</span> range(<span class="code-number">5</span>):
+    GPIO.output(<span class="code-number">18</span>, GPIO.HIGH)
+    time.sleep(<span class="code-number">0.5</span>)
+    GPIO.output(<span class="code-number">18</span>, GPIO.LOW)
+    time.sleep(<span class="code-number">0.5</span>)
+
+<span class="code-comment"># Input with pull-up</span>
+GPIO.setup(<span class="code-number">17</span>, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+val = GPIO.input(<span class="code-number">17</span>)  <span class="code-comment"># 1=HIGH, 0=LOW</span>
+
+<span class="code-comment"># Edge interrupt callback</span>
+<span class="code-keyword">def</span> <span class="code-fn">on_edge</span>(channel):
+    print(<span class="code-string">f"Rising edge on GPIO{channel}"</span>)
+
+GPIO.add_event_detect(<span class="code-number">17</span>, GPIO.RISING, callback=on_edge)
+
+GPIO.cleanup()  <span class="code-comment"># always cleanup</span></pre></div>
+
+        <div class="code-tag">PWM — LED + Servo</div>
+        <div class="code-block"><pre><span class="code-keyword">import</span> RPi.GPIO <span class="code-keyword">as</span> GPIO
+<span class="code-keyword">import</span> time
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(<span class="code-number">18</span>, GPIO.OUT)
+
+<span class="code-comment"># Software PWM @ 1kHz (LED brightness)</span>
+pwm = GPIO.PWM(<span class="code-number">18</span>, <span class="code-number">1000</span>)
+pwm.start(<span class="code-number">0</span>)
+<span class="code-keyword">for</span> dc <span class="code-keyword">in</span> range(<span class="code-number">0</span>, <span class="code-number">101</span>, <span class="code-number">5</span>):
+    pwm.ChangeDutyCycle(dc)
+    time.sleep(<span class="code-number">0.05</span>)
+pwm.stop()
+
+<span class="code-comment"># Servo @ 50 Hz — 0° → 180°</span>
+servo = GPIO.PWM(<span class="code-number">18</span>, <span class="code-number">50</span>)
+servo.start(<span class="code-number">7.5</span>)     <span class="code-comment"># 90°  neutral</span>
+time.sleep(<span class="code-number">1</span>)
+servo.ChangeDutyCycle(<span class="code-number">2.5</span>)  <span class="code-comment"># 0°</span>
+time.sleep(<span class="code-number">1</span>)
+servo.ChangeDutyCycle(<span class="code-number">12.5</span>) <span class="code-comment"># 180°</span>
+time.sleep(<span class="code-number">1</span>)
+servo.stop()
+GPIO.cleanup()</pre></div>
+
+        <div class="code-tag">1-Wire — DS18B20</div>
+        <div class="code-block"><pre><span class="code-keyword">import</span> glob
+
+<span class="code-comment"># Kernel driver reads sensor files</span>
+sensors = glob.glob(<span class="code-string">'/sys/bus/w1/devices/28-*'</span>)
+
+<span class="code-keyword">for</span> sensor <span class="code-keyword">in</span> sensors:
+    <span class="code-keyword">with</span> open(<span class="code-string">f"{sensor}/w1_slave"</span>) <span class="code-keyword">as</span> f:
+        lines = f.readlines()
+    <span class="code-keyword">if</span> <span class="code-string">'YES'</span> <span class="code-keyword">in</span> lines[<span class="code-number">0</span>]:
+        raw = lines[<span class="code-number">1</span>].split(<span class="code-string">'t='</span>)[<span class="code-number">1</span>].strip()
+        temp_c = float(raw) / <span class="code-number">1000.0</span>
+        print(<span class="code-string">f"{sensor.split('/')[-1]}: {temp_c:.3f}°C"</span>)</pre></div>
+      </div>
+
+      <div>
+        <div class="code-tag">I2C — smbus2</div>
+        <div class="code-block"><pre><span class="code-keyword">import</span> smbus2
+
+bus = smbus2.SMBus(<span class="code-number">1</span>)  <span class="code-comment"># Bus 1 = header pins</span>
+
+<span class="code-comment"># Scan for all devices</span>
+found = []
+<span class="code-keyword">for</span> addr <span class="code-keyword">in</span> range(<span class="code-number">0x03</span>, <span class="code-number">0x78</span>):
+    <span class="code-keyword">try</span>:
+        bus.read_byte(addr)
+        found.append(<span class="code-string">f"0x{addr:02X}"</span>)
+    <span class="code-keyword">except</span> OSError:
+        <span class="code-keyword">pass</span>
+print(<span class="code-string">"Devices:"</span>, found)
+
+<span class="code-comment"># Read WHO_AM_I from MPU-6050 (addr 0x68)</span>
+who = bus.read_byte_data(<span class="code-number">0x68</span>, <span class="code-number">0x75</span>)
+print(<span class="code-string">f"WHO_AM_I = 0x{who:02X}"</span>)  <span class="code-comment"># → 0x68</span>
+
+<span class="code-comment"># Write a register</span>
+bus.write_byte_data(<span class="code-number">0x68</span>, <span class="code-number">0x6B</span>, <span class="code-number">0x00</span>)  <span class="code-comment"># wake up</span>
+
+bus.close()</pre></div>
+
+        <div class="code-tag">SPI — spidev</div>
+        <div class="code-block"><pre><span class="code-keyword">import</span> spidev
+
+spi = spidev.SpiDev()
+spi.open(<span class="code-number">0</span>, <span class="code-number">0</span>)           <span class="code-comment"># bus 0, CE0</span>
+spi.max_speed_hz = <span class="code-number">500000</span>
+spi.mode = <span class="code-number">0</span>             <span class="code-comment"># CPOL=0 CPHA=0</span>
+
+<span class="code-comment"># Full-duplex transfer — loopback test</span>
+<span class="code-comment"># Wire MOSI (Pin 19) → MISO (Pin 21)</span>
+tx = [<span class="code-number">0xDE</span>, <span class="code-number">0xAD</span>, <span class="code-number">0xBE</span>, <span class="code-number">0xEF</span>]
+rx = spi.xfer2(tx)
+print(tx == rx)  <span class="code-comment"># True if wired</span>
+
+<span class="code-comment"># Read MCP3008 channel 0 (12-bit ADC)</span>
+<span class="code-keyword">def</span> <span class="code-fn">read_adc</span>(ch):
+    r = spi.xfer2([<span class="code-number">1</span>, (<span class="code-number">8</span> + ch) &lt;&lt; <span class="code-number">4</span>, <span class="code-number">0</span>])
+    <span class="code-keyword">return</span> ((r[<span class="code-number">1</span>] &amp; <span class="code-number">3</span>) &lt;&lt; <span class="code-number">8</span>) + r[<span class="code-number">2</span>]
+
+spi.close()</pre></div>
+
+        <div class="code-tag">UART — pyserial</div>
+        <div class="code-block"><pre><span class="code-keyword">import</span> serial
+<span class="code-keyword">import</span> time
+
+<span class="code-comment"># Disable serial console first via raspi-config!</span>
+ser = serial.Serial(
+    port=<span class="code-string">'/dev/serial0'</span>,  <span class="code-comment"># UART0 (PL011)</span>
+    baudrate=<span class="code-number">9600</span>,
+    bytesize=serial.EIGHTBITS,
+    parity=serial.PARITY_NONE,
+    stopbits=serial.STOPBITS_ONE,
+    timeout=<span class="code-number">2</span>
+)
+
+<span class="code-comment"># Send and receive (loopback: TX→RX)</span>
+msg = <span class="code-string">b'Hello RPi!'</span>
+ser.write(msg)
+time.sleep(<span class="code-number">0.1</span>)
+response = ser.read(len(msg))
+print(response)  <span class="code-comment"># b'Hello RPi!'</span>
+
+ser.close()</pre></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- ═══════════ QUICK REF ═══════════ -->
+<div id="quickref" class="section">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-tag">At a Glance <span></span></div>
+      <h2 class="section-title">Quick Reference</h2>
+      <p class="section-sub">Common pins, commands, and config snippets for daily use</p>
+    </div>
+    <div class="qref-grid">
+      <div class="qref-card">
+        <div class="qref-title">Power Pins</div>
+        <div class="qref-row"><span class="qref-key">3.3V</span><span class="qref-val" style="color:var(--red)">Pin 1, 17</span></div>
+        <div class="qref-row"><span class="qref-key">5V</span><span class="qref-val" style="color:var(--orange)">Pin 2, 4</span></div>
+        <div class="qref-row"><span class="qref-key">GND</span><span class="qref-val" style="color:var(--gray)">Pin 6,9,14,20,25,30,34,39</span></div>
+      </div>
+      <div class="qref-card">
+        <div class="qref-title">I2C Pins</div>
+        <div class="qref-row"><span class="qref-key">SDA (Bus 1)</span><span class="qref-val" style="color:var(--green)">GPIO2 · Pin 3</span></div>
+        <div class="qref-row"><span class="qref-key">SCL (Bus 1)</span><span class="qref-val" style="color:var(--green)">GPIO3 · Pin 5</span></div>
+        <div class="qref-row"><span class="qref-key">HAT EEPROM</span><span class="qref-val">GPIO0/1 · Pin 27/28</span></div>
+      </div>
+      <div class="qref-card">
+        <div class="qref-title">SPI Pins</div>
+        <div class="qref-row"><span class="qref-key">MOSI</span><span class="qref-val" style="color:var(--orange)">GPIO10 · Pin 19</span></div>
+        <div class="qref-row"><span class="qref-key">MISO</span><span class="qref-val" style="color:var(--orange)">GPIO9 · Pin 21</span></div>
+        <div class="qref-row"><span class="qref-key">SCLK</span><span class="qref-val" style="color:var(--orange)">GPIO11 · Pin 23</span></div>
+        <div class="qref-row"><span class="qref-key">CE0</span><span class="qref-val" style="color:var(--orange)">GPIO8 · Pin 24</span></div>
+        <div class="qref-row"><span class="qref-key">CE1</span><span class="qref-val" style="color:var(--orange)">GPIO7 · Pin 26</span></div>
+      </div>
+      <div class="qref-card">
+        <div class="qref-title">UART Pins</div>
+        <div class="qref-row"><span class="qref-key">TX</span><span class="qref-val" style="color:var(--yellow)">GPIO14 · Pin 8</span></div>
+        <div class="qref-row"><span class="qref-key">RX</span><span class="qref-val" style="color:var(--yellow)">GPIO15 · Pin 10</span></div>
+        <div class="qref-row"><span class="qref-key">Device</span><span class="qref-val">/dev/serial0</span></div>
+      </div>
+      <div class="qref-card">
+        <div class="qref-title">PWM Pins</div>
+        <div class="qref-row"><span class="qref-key">PWM0 (main)</span><span class="qref-val" style="color:var(--purple)">GPIO18 · Pin 12</span></div>
+        <div class="qref-row"><span class="qref-key">PWM0 (alt)</span><span class="qref-val" style="color:var(--purple)">GPIO12 · Pin 32</span></div>
+        <div class="qref-row"><span class="qref-key">PWM1</span><span class="qref-val" style="color:var(--purple)">GPIO13 · Pin 33</span></div>
+        <div class="qref-row"><span class="qref-key">PWM1 (alt)</span><span class="qref-val" style="color:var(--purple)">GPIO19 · Pin 35</span></div>
+      </div>
+      <div class="qref-card">
+        <div class="qref-title">1-Wire</div>
+        <div class="qref-row"><span class="qref-key">Default pin</span><span class="qref-val" style="color:var(--cyan)">GPIO4 · Pin 7</span></div>
+        <div class="qref-row"><span class="qref-key">Pull-up</span><span class="qref-val">4.7kΩ to 3.3V</span></div>
+        <div class="qref-row"><span class="qref-key">Sysfs path</span><span class="qref-val">/sys/bus/w1/devices/28-*</span></div>
+      </div>
+      <div class="qref-card">
+        <div class="qref-title">raspi-config enables</div>
+        <div class="qref-row"><span class="qref-key">I2C</span><span class="qref-val">Interface → I2C</span></div>
+        <div class="qref-row"><span class="qref-key">SPI</span><span class="qref-val">Interface → SPI</span></div>
+        <div class="qref-row"><span class="qref-key">UART</span><span class="qref-val">Interface → Serial Port</span></div>
+        <div class="qref-row"><span class="qref-key">1-Wire</span><span class="qref-val">Interface → 1-Wire</span></div>
+        <div class="qref-row"><span class="qref-key">Camera</span><span class="qref-val">Interface → Camera</span></div>
+      </div>
+      <div class="qref-card">
+        <div class="qref-title">pip packages</div>
+        <div class="qref-row"><span class="qref-key">GPIO</span><span class="qref-val">pip install RPi.GPIO</span></div>
+        <div class="qref-row"><span class="qref-key">I2C</span><span class="qref-val">pip install smbus2</span></div>
+        <div class="qref-row"><span class="qref-key">SPI</span><span class="qref-val">pip install spidev</span></div>
+        <div class="qref-row"><span class="qref-key">UART</span><span class="qref-val">pip install pyserial</span></div>
+        <div class="qref-row"><span class="qref-key">Blinka</span><span class="qref-val">pip install adafruit-blinka</span></div>
+      </div>
+      <div class="qref-card">
+        <div class="qref-title">GPIO limits</div>
+        <div class="qref-row"><span class="qref-key">Logic level</span><span class="qref-val" style="color:var(--red)">3.3V ONLY</span></div>
+        <div class="qref-row"><span class="qref-key">Max per pin</span><span class="qref-val">16 mA output</span></div>
+        <div class="qref-row"><span class="qref-key">Max total</span><span class="qref-val">50 mA all GPIO</span></div>
+        <div class="qref-row"><span class="qref-key">Pull R value</span><span class="qref-val">~50 kΩ internal</span></div>
+        <div class="qref-row"><span class="qref-key">HIGH threshold</span><span class="qref-val">&gt; 1.6V input</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ FOOTER ═══════════ -->
+<footer>
+  <div class="footer-grid">
+    <div>
+      <div style="font-weight:600;color:var(--text2);margin-bottom:6px">Raspberry Pi 4 GPIO Reference</div>
+      <div>Based on BCM2711 datasheet RP-008341-DS Release 1.1, March 2024 · © Raspberry Pi (Trading) Ltd.</div>
+      <div style="margin-top:4px">Pin data sourced from the official Raspberry Pi 4 Model B documentation.</div>
+    </div>
+    <div class="footer-links">
+      <a href="https://datasheets.raspberrypi.com/rpi4/raspberry-pi-4-datasheet.pdf">BCM2711 Datasheet</a>
+      <a href="https://www.raspberrypi.com/documentation/computers/raspberry-pi.html">RPi Docs</a>
+      <a href="https://pinout.xyz">pinout.xyz</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// ══════════════════════════════════════════
+// DATA
+// ══════════════════════════════════════════
+const PINS = [
+  [1,null,"3V3","PWR33","3.3V power rail (~50 mA max total)",{}],
+  [2,null,"5V","PWR5","5V rail — direct from USB-C supply",{}],
+  [3,2,"SDA1","I2C","I2C1 data · 1.8kΩ board pull-up · GPIO2 pull=High",{ALT0:"SDA1",ALT1:"SA3",ALT2:"LCD_VSYNC",ALT3:"SPI3_MOSI",ALT4:"CTS2",ALT5:"SDA3"}],
+  [4,null,"5V","PWR5","5V power rail",{}],
+  [5,3,"SCL1","I2C","I2C1 clock · 1.8kΩ board pull-up · GPIO3 pull=High",{ALT0:"SCL1",ALT1:"SA2",ALT2:"LCD_HSYNC",ALT3:"SPI3_SCLK",ALT4:"RTS2",ALT5:"SCL3"}],
+  [6,null,"GND","GND","Ground",{}],
+  [7,4,"GPIO4","ONEWIRE","GPIO4 pull=High · 1-Wire default (DS18B20)",{ALT0:"GPCLK0",ALT1:"SA1",ALT2:"DPI_D0",ALT3:"SPI4_CE0_N",ALT4:"TXD3",ALT5:"SDA3"}],
+  [8,14,"TXD0","UART","GPIO14 pull=Low · UART0 TX / UART1 TX",{ALT0:"TXD0",ALT1:"SD6",ALT2:"DPI_D10",ALT3:"SPI5_MOSI",ALT4:"CTS5",ALT5:"TXD1"}],
+  [9,null,"GND","GND","Ground",{}],
+  [10,15,"RXD0","UART","GPIO15 pull=Low · UART0 RX / UART1 RX",{ALT0:"RXD0",ALT1:"SD7",ALT2:"DPI_D11",ALT3:"SPI5_SCLK",ALT4:"RTS5",ALT5:"RXD1"}],
+  [11,17,"GPIO17","GPIO","GPIO17 pull=Low · general I/O",{ALT0:"FL1",ALT1:"SD9",ALT2:"DPI_D13",ALT3:"RTS0",ALT4:"SPI1_CE1_N",ALT5:"RTS1"}],
+  [12,18,"PCM_CLK","PWM","GPIO18 pull=Low · HW PWM0 (ALT5) / PCM CLK (ALT0)",{ALT0:"PCM_CLK",ALT1:"SD10",ALT2:"DPI_D14",ALT3:"SPI6_CE0_N",ALT4:"SPI1_CE0_N",ALT5:"PWM0"}],
+  [13,27,"GPIO27","GPIO","GPIO27 pull=Low · general I/O",{ALT0:"SD0_DAT3",ALT1:"TE1",ALT2:"DPI_D23",ALT3:"SD1_DAT3",ALT4:"ARM_TMS",ALT5:"SPI6_CE1_N"}],
+  [14,null,"GND","GND","Ground",{}],
+  [15,22,"GPIO22","GPIO","GPIO22 pull=Low · general I/O",{ALT0:"SD0_CLK",ALT1:"SD14",ALT2:"DPI_D18",ALT3:"SD1_CLK",ALT4:"ARM_TRST",ALT5:"SDA6"}],
+  [16,23,"GPIO23","GPIO","GPIO23 pull=Low · general I/O",{ALT0:"SD0_CMD",ALT1:"SD15",ALT2:"DPI_D19",ALT3:"SD1_CMD",ALT4:"ARM_RTCK",ALT5:"SCL6"}],
+  [17,null,"3V3","PWR33","3.3V power rail",{}],
+  [18,24,"GPIO24","GPIO","GPIO24 pull=Low · general I/O",{ALT0:"SD0_DAT0",ALT1:"SD16",ALT2:"DPI_D20",ALT3:"SD1_DAT0",ALT4:"ARM_TDO",ALT5:"SPI3_CE1_N"}],
+  [19,10,"MOSI","SPI","GPIO10 pull=Low · SPI0 MOSI",{ALT0:"SPI0_MOSI",ALT1:"SD2",ALT2:"DPI_D6",ALT3:"",ALT4:"CTS4",ALT5:"SDA5"}],
+  [20,null,"GND","GND","Ground",{}],
+  [21,9,"MISO","SPI","GPIO9 pull=Low · SPI0 MISO",{ALT0:"SPI0_MISO",ALT1:"SD1",ALT2:"DPI_D5",ALT3:"",ALT4:"RXD4",ALT5:"SCL4"}],
+  [22,25,"GPIO25","GPIO","GPIO25 pull=Low · general I/O",{ALT0:"SD0_DAT1",ALT1:"SD17",ALT2:"DPI_D21",ALT3:"SD1_DAT1",ALT4:"ARM_TCK",ALT5:"SPI4_CE1_N"}],
+  [23,11,"SCLK","SPI","GPIO11 pull=Low · SPI0 clock",{ALT0:"SPI0_SCLK",ALT1:"SD3",ALT2:"DPI_D7",ALT3:"",ALT4:"RTS4",ALT5:"SCL5"}],
+  [24,8,"CE0","SPI","GPIO8 pull=High · SPI0 chip-enable 0 (active LOW)",{ALT0:"SPI0_CE0_N",ALT1:"SD0",ALT2:"DPI_D4",ALT3:"",ALT4:"TXD4",ALT5:"SDA4"}],
+  [25,null,"GND","GND","Ground",{}],
+  [26,7,"CE1","SPI","GPIO7 pull=High · SPI0 chip-enable 1 (active LOW)",{ALT0:"SPI0_CE1_N",ALT1:"SWE_N",ALT2:"DPI_D3",ALT3:"SPI4_SCLK",ALT4:"RTS3",ALT5:"SCL4"}],
+  [27,0,"ID_SDA","ID","GPIO0 pull=High · HAT EEPROM SDA / I2C0 — reserved",{ALT0:"SDA0",ALT1:"SA5",ALT2:"PCLK",ALT3:"SPI3_CE0_N",ALT4:"TXD2",ALT5:"SDA6"}],
+  [28,1,"ID_SCL","ID","GPIO1 pull=High · HAT EEPROM SCL / I2C0 — reserved",{ALT0:"SCL0",ALT1:"SA4",ALT2:"DE",ALT3:"SPI3_MISO",ALT4:"RXD2",ALT5:"SCL6"}],
+  [29,5,"GPIO5","GPIO","GPIO5 pull=High · general I/O",{ALT0:"GPCLK1",ALT1:"SA0",ALT2:"DPI_D1",ALT3:"SPI4_MISO",ALT4:"RXD3",ALT5:"SCL3"}],
+  [30,null,"GND","GND","Ground",{}],
+  [31,6,"GPIO6","GPIO","GPIO6 pull=High · general I/O",{ALT0:"GPCLK2",ALT1:"SOE_N",ALT2:"DPI_D2",ALT3:"SPI4_MOSI",ALT4:"CTS3",ALT5:"SDA4"}],
+  [32,12,"PWM0","PWM","GPIO12 pull=Low · HW PWM0 (ALT0)",{ALT0:"PWM0",ALT1:"SD4",ALT2:"DPI_D8",ALT3:"SPI5_CE0_N",ALT4:"TXD5",ALT5:"SDA5"}],
+  [33,13,"PWM1","PWM","GPIO13 pull=Low · HW PWM1 (ALT0)",{ALT0:"PWM1",ALT1:"SD5",ALT2:"DPI_D9",ALT3:"SPI5_MISO",ALT4:"RXD5",ALT5:"SCL5"}],
+  [34,null,"GND","GND","Ground",{}],
+  [35,19,"PCM_FS","SPI","GPIO19 pull=Low · SPI1 MISO (ALT4) / PCM FS (ALT0) / PWM1 (ALT5)",{ALT0:"PCM_FS",ALT1:"SD11",ALT2:"DPI_D15",ALT3:"SPI6_MISO",ALT4:"SPI1_MISO",ALT5:"PWM1"}],
+  [36,16,"GPIO16","GPIO","GPIO16 pull=Low · SPI1 CE2 (ALT4) / CTS0 (ALT3)",{ALT0:"FL0",ALT1:"SD8",ALT2:"DPI_D12",ALT3:"CTS0",ALT4:"SPI1_CE2_N",ALT5:"CTS1"}],
+  [37,26,"GPIO26","GPIO","GPIO26 pull=Low · general I/O",{ALT0:"SD0_DAT2",ALT1:"TE0",ALT2:"DPI_D22",ALT3:"SD1_DAT2",ALT4:"ARM_TDI",ALT5:"SPI5_CE1_N"}],
+  [38,20,"PCM_DIN","SPI","GPIO20 pull=Low · SPI1 MOSI (ALT4) / PCM DIN (ALT0)",{ALT0:"PCM_DIN",ALT1:"SD12",ALT2:"DPI_D16",ALT3:"SPI6_MOSI",ALT4:"SPI1_MOSI",ALT5:"GPCLK0"}],
+  [39,null,"GND","GND","Ground",{}],
+  [40,21,"PCM_DOUT","SPI","GPIO21 pull=Low · SPI1 SCLK (ALT4) / PCM DOUT (ALT0)",{ALT0:"PCM_DOUT",ALT1:"SD13",ALT2:"DPI_D17",ALT3:"SPI6_SCLK",ALT4:"SPI1_SCLK",ALT5:"GPCLK1"}],
+]
+
+const TYPES = {
+  PWR33:{n:"3.3V",  c:"#ff4d4d"}, PWR5:{n:"5V",c:"#ff7c35"},
+  GND:{n:"GND",     c:"#606880"}, GPIO:{n:"GPIO",c:"#5b9cf5"},
+  I2C:{n:"I2C",     c:"#3ed98a"}, SPI:{n:"SPI",c:"#ff7c35"},
+  UART:{n:"UART",   c:"#f5c842"}, PWM:{n:"PWM",c:"#b48aff"},
+  ID:{n:"HAT-ID",   c:"#606880"}, ONEWIRE:{n:"1-Wire",c:"#38d4f5"},
+}
+
+function chipClass(fn){
+  if(!fn) return 'ch-none'
+  const u=fn.toUpperCase()
+  if(u.includes('TXD')||u.includes('RXD')||u.includes('CTS')||u.includes('RTS')) return 'ch-uart'
+  if(u.includes('SPI')) return 'ch-spi'
+  if(u.includes('SDA')||u.includes('SCL')||u.includes('I2C')) return 'ch-i2c'
+  if(u.includes('PWM')) return 'ch-pwm'
+  if(u.includes('PCM')||u.includes('GPCLK')||u.includes('PCLK')) return 'ch-pcm'
+  if(u.includes('ARM')) return 'ch-jtag'
+  if(u.includes('CLK')) return 'ch-clk'
+  if(u.includes('DPI')||u.includes('LCD')||u.includes('SD')||u.includes('SA')||u.includes('TE')||u.includes('SOE')||u.includes('SWE')||u.includes('FL')||u.includes('DE')) return 'ch-dpi'
+  return 'ch-none'
+}
+
+// ── LEGEND ───────────────────────────────
+;(function buildLegend(){
+  const wrap=document.getElementById('legend')
+  Object.entries(TYPES).forEach(([t,{n,c}])=>{
+    const span=document.createElement('span')
+    span.className='leg-item pt-'+t
+    span.innerHTML='■ '+n
+    span.onclick=()=>{
+      const rows=document.querySelectorAll('#pinmap-table tr')
+      const isAll=span.dataset.active==='1'
+      rows.forEach((tr,i)=>{
+        const L=PINS[i*2],R=PINS[i*2+1]
+        tr.style.opacity=isAll||L.type===t||R.type===t?'1':'0.15'
+      })
+      document.querySelectorAll('.leg-item').forEach(s=>s.style.opacity='1')
+      if(!isAll){span.style.opacity='1';span.dataset.active='1'}
+      else{span.dataset.active='';document.querySelectorAll('#pinmap-table tr').forEach(r=>r.style.opacity='1')}
+    }
+    wrap.appendChild(span)
+  })
+})()
+
+// ── 40-PIN TABLE ─────────────────────────
+;(function buildPinMap(){
+  const tbl=document.getElementById('pinmap-table')
+  for(let i=0;i<PINS.length;i+=2){
+    const L=PINS[i],R=PINS[i+1]
+    const tr=document.createElement('tr')
+    const lDesc=L[4].length>38?L[4].slice(0,38)+'…':L[4]
+    const rDesc=R[4].length>38?R[4].slice(0,38)+'…':R[4]
+    tr.innerHTML=`
+      <td class="pd" title="${L[4]}" style="text-align:right">${lDesc}</td>
+      <td style="text-align:right"><span class="pl pt-${L[2]}" onclick="showPinDetail(${i})">${L[2]}</span></td>
+      <td><div class="pn pn-${L[2]}" onclick="showPinDetail(${i})" title="Pin ${L[0]}">${L[0]}</div></td>
+      <td class="psep">│</td>
+      <td><div class="pn pn-${R[2]}" onclick="showPinDetail(${i+1})" title="Pin ${R[0]}">${R[0]}</div></td>
+      <td><span class="pl pt-${R[2]}" onclick="showPinDetail(${i+1})">${R[2]}</span></td>
+      <td class="pd" title="${R[4]}">${rDesc}</td>`
+    tbl.appendChild(tr)
+  }
+})()
+
+// ── PIN DETAIL ────────────────────────────
+function showPinDetail(idx){
+  const p=PINS[idx]
+  const panel=document.getElementById('pin-detail')
+  if(panel._last===idx&&panel.classList.contains('open')){panel.classList.remove('open');return}
+  panel._last=idx
+  const [phys,bcm,label,type,desc,alts]=p
+  const pull=desc.includes('pull=High')?'High':desc.includes('pull=Low')?'Low':'—'
+  const pullBadge=pull==='High'?'<span class="pull-hi">PULL-UP (High)</span>':'<span class="pull-lo">PULL-DOWN (Low)</span>'
+
+  let altRows=''
+  if(bcm!==null&&Object.keys(alts).length){
+    altRows='<div style="margin-top:10px"><div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Alternate Functions (BCM2711 Table 5)</div>'
+    altRows+='<div style="display:grid;grid-template-columns:55px repeat(6,1fr);gap:3px;font-size:10px">'
+    altRows+='<span style="color:var(--text3);padding:3px 6px">Pin</span>'
+    ;['ALT0','ALT1','ALT2','ALT3','ALT4','ALT5'].forEach(a=>{altRows+=`<span style="color:var(--text3);padding:3px 6px;font-weight:700">${a}</span>`})
+    altRows+=`<span style="padding:3px 6px;color:var(--text2)">GPIO${bcm}</span>`
+    ;['ALT0','ALT1','ALT2','ALT3','ALT4','ALT5'].forEach(a=>{
+      const v=alts[a]||''
+      altRows+=v?`<span class="chip ${chipClass(v)}" style="justify-content:center">${v}</span>`:`<span style="color:var(--text4);padding:3px 6px">—</span>`
+    })
+    altRows+='</div></div>'
+  }
+
+  let codeHtml=''
+  if(bcm!==null&&type==='GPIO'){
+    codeHtml=`<div class="pd-code" style="margin-top:10px">
+GPIO.setmode(GPIO.BCM)<br>
+GPIO.setup(<span style="color:var(--orange)">${bcm}</span>, GPIO.OUT)  <span style="color:var(--text4)"># or GPIO.IN</span><br>
+GPIO.output(<span style="color:var(--orange)">${bcm}</span>, GPIO.HIGH)<br>
+val = GPIO.input(<span style="color:var(--orange)">${bcm}</span>)
+</div>`
+  }
+
+  panel.innerHTML=`
+    <div class="pd-h">
+      <span class="pd-badge pt-${type}" style="font-size:14px;font-weight:700">${label}</span>
+      <span style="font-family:'Syne',sans-serif;font-size:16px;font-weight:700">Pin ${phys}</span>
+      ${bcm!==null?`<span style="color:var(--text2);font-size:12px">BCM ${bcm}</span>`:''}
+      <span style="color:var(--text3);font-size:11px">${type}</span>
+      ${bcm!==null?pullBadge:''}
+    </div>
+    <div class="pd-desc">${desc}</div>
+    ${codeHtml}${altRows}
+  `
+  panel.classList.add('open')
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'})
+}
+
+// ── ALT TABLE ─────────────────────────────
+;(function buildAltTable(){
+  const tbl=document.getElementById('alt-table')
+  const thead=document.createElement('thead')
+  thead.innerHTML='<tr><th>GPIO</th><th>Pull</th><th>Phys Pin</th><th>ALT0</th><th>ALT1</th><th>ALT2</th><th>ALT3</th><th>ALT4</th><th>ALT5</th></tr>'
+  tbl.appendChild(thead)
+  const tbody=document.createElement('tbody')
+  const gpios=PINS.filter(p=>p[1]!==null&&Object.keys(p[5]).length).sort((a,b)=>a[1]-b[1])
+  gpios.forEach(p=>{
+    const [phys,bcm,label,type,desc,alts]=p
+    const pull=desc.includes('pull=High')?'High':'Low'
+    const tr=document.createElement('tr')
+    const altCells=['ALT0','ALT1','ALT2','ALT3','ALT4','ALT5'].map(a=>{
+      const v=alts[a]||''
+      return v?`<td><span class="chip ${chipClass(v)}">${v}</span></td>`:`<td><span class="ch-none">—</span></td>`
+    }).join('')
+    tr.innerHTML=`
+      <td><span class="pl pt-${type}" style="cursor:default;font-size:10px">${label}</span></td>
+      <td>${pull==='High'?'<span class="pull-hi">High</span>':'<span class="pull-lo">Low</span>'}</td>
+      <td style="color:var(--text3);font-size:10px">P${phys}</td>
+      ${altCells}`
+    tbody.appendChild(tr)
+  })
+  tbl.appendChild(tbody)
+})()
+
+// ── PULL TABLE ────────────────────────────
+;(function buildPullTable(){
+  const tbl=document.getElementById('pull-table')
+  const thead=document.createElement('thead')
+  thead.innerHTML='<tr><th>BCM GPIO</th><th>Default Pull</th><th>Description</th><th>Override (Python)</th></tr>'
+  tbl.appendChild(thead)
+  const tbody=document.createElement('tbody')
+  const rows=[
+    [2,'High','I2C1 SDA — board 1.8kΩ pull-up','GPIO.PUD_DOWN'],
+    [3,'High','I2C1 SCL — board 1.8kΩ pull-up','GPIO.PUD_DOWN'],
+    [4,'High','1-Wire default pin','GPIO.PUD_DOWN'],
+    [5,'High','General I/O','GPIO.PUD_DOWN'],
+    [6,'High','General I/O','GPIO.PUD_DOWN'],
+    [7,'High','SPI0 CE1 — active LOW','GPIO.PUD_DOWN'],
+    [8,'High','SPI0 CE0 — active LOW','GPIO.PUD_DOWN'],
+    [0,'High','HAT EEPROM SDA — reserved','—'],
+    [1,'High','HAT EEPROM SCL — reserved','—'],
+    [9,'Low','SPI0 MISO','GPIO.PUD_UP'],
+    [10,'Low','SPI0 MOSI','GPIO.PUD_UP'],
+    [11,'Low','SPI0 SCLK','GPIO.PUD_UP'],
+    [12,'Low','HW PWM0 (ALT0)','GPIO.PUD_UP'],
+    [13,'Low','HW PWM1 (ALT0)','GPIO.PUD_UP'],
+    [14,'Low','UART0 TX','GPIO.PUD_UP'],
+    [15,'Low','UART0 RX','GPIO.PUD_UP'],
+    [16,'Low','General I/O','GPIO.PUD_UP'],
+    [17,'Low','General I/O','GPIO.PUD_UP'],
+    [18,'Low','PCM CLK / HW PWM0 (ALT5)','GPIO.PUD_UP'],
+    [19,'Low','PCM FS / SPI1 MISO','GPIO.PUD_UP'],
+    [20,'Low','PCM DIN / SPI1 MOSI','GPIO.PUD_UP'],
+    [21,'Low','PCM DOUT / SPI1 SCLK','GPIO.PUD_UP'],
+    [22,'Low','General I/O','GPIO.PUD_UP'],
+    [23,'Low','General I/O','GPIO.PUD_UP'],
+    [24,'Low','General I/O','GPIO.PUD_UP'],
+    [25,'Low','General I/O','GPIO.PUD_UP'],
+    [26,'Low','General I/O','GPIO.PUD_UP'],
+    [27,'Low','General I/O','GPIO.PUD_UP'],
+  ].sort((a,b)=>a[0]-b[0])
+  rows.forEach(([bcm,pull,desc,override])=>{
+    const tr=document.createElement('tr')
+    tr.innerHTML=`
+      <td style="font-weight:600;color:var(--blue)">GPIO${bcm}</td>
+      <td>${pull==='High'?'<span class="pull-hi">High (pull-up)</span>':'<span class="pull-lo">Low (pull-down)</span>'}</td>
+      <td style="color:var(--text2)">${desc}</td>
+      <td style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:10px">${override}</td>`
+    tbody.appendChild(tr)
+  })
+  tbl.appendChild(tbody)
+})()
+
+// ── PERIPHERAL CARDS ─────────────────────
+;(function buildPeriphCards(){
+  const grid=document.getElementById('periph-grid')
+  const cards=[
+    {title:'SPI (7 buses)',color:'#ff7c35',items:['SPI0 on 40-pin header (GPIO8–11)','SPI1–SPI6 via ALT mux','SPI2 not accessible on header','Max clock: 125 MHz (250 MHz / n)','Modes: CPOL/CPHA 0,1,2,3','Library: <code>spidev</code>']},
+    {title:'I2C (7 buses)',color:'#3ed98a',items:['I2C0: HAT EEPROM (GPIO0/1)','I2C1: Header pins 3+5 ← use this','I2C2: HDMI DDC (internal)','I2C3–6: via ALT mux on various GPIOs','Board 1.8kΩ pull-ups on SDA1/SCL1','Library: <code>smbus2</code>']},
+    {title:'UART (6 UARTs)',color:'#f5c842',items:['UART0: PL011 full UART (GPIO14/15)','UART1: Mini-UART (CPU-clocked)','UART2–5: via ALT mux on various GPIOs','Default: /dev/serial0 → UART0','Disable console first via raspi-config','Library: <code>pyserial</code>']},
+    {title:'PWM (2 channels)',color:'#b48aff',items:['PWM0: GPIO12 (ALT0) or GPIO18 (ALT5)','PWM1: GPIO13 (ALT0) or GPIO19 (ALT5)','Clock: 19.2 MHz oscillator','Freq range: ~1 Hz – 125 MHz','Servo: 50 Hz, 1–2 ms pulse','Software PWM also available via GPIO']},
+    {title:'PCM / I2S Audio',color:'#38d4f5',items:['CLK: GPIO18 (Pin 12) ALT0','FS:  GPIO19 (Pin 35) ALT0','DIN: GPIO20 (Pin 38) ALT0','DOUT:GPIO21 (Pin 40) ALT0','Use dtoverlay=i2s-mmap','Supports 8kHz – 192kHz']},
+    {title:'General Purpose Clocks',color:'#606880',items:['GPCLK0: GPIO4 (ALT0) or GPIO20 (ALT5)','GPCLK1: GPIO5 (ALT0) or GPIO21 (ALT5)','GPCLK2: GPIO6 (ALT0)','Sources: Oscillator, PLLA, PLLD, HDMI','Use for audio MCLK or external ref','Enable via dtoverlay or direct register']},
+    {title:'DPI (Display Parallel)',color:'#444c60',items:['24-bit parallel RGB video output','GPIO0–27 used as DPI_D0–D23','Consumes entire GPIO header','Use for custom LCD panels','dtoverlay=vc4-kms-dpi-generic','Conflicts with all other GPIO use']},
+    {title:'ARM JTAG Debug',color:'#f56fa0',items:['TRST: GPIO22 (ALT4)','RTCK: GPIO23 (ALT4)','TDO:  GPIO24 (ALT4)','TCK:  GPIO25 (ALT4)','TDI:  GPIO26 (ALT4)','TMS:  GPIO27 (ALT4) — hardware debug only']},
+    {title:'1-Wire',color:'#38d4f5',items:['Default: GPIO4 (Pin 7)','Kernel driver: w1-gpio','External 4.7kΩ pull-up required','Multiple sensors on one pin','Each sensor has unique 64-bit ID','Sensor sysfs: /sys/bus/w1/devices/28-*']},
+  ]
+  cards.forEach(({title,color,items})=>{
+    const div=document.createElement('div')
+    div.className='periph-card'
+    div.style.borderTopColor=color
+    div.innerHTML=`<h3 style="color:${color}">${title}</h3><ul>${items.map(i=>`<li>${i}</li>`).join('')}</ul>`
+    grid.appendChild(div)
+  })
+})()
+
+// ── NAV HIGHLIGHT ─────────────────────────
+;(function setupNav(){
+  const links=document.querySelectorAll('.nav-link')
+  const sections=document.querySelectorAll('[id]')
+  const observer=new IntersectionObserver(entries=>{
+    entries.forEach(e=>{
+      if(e.isIntersecting){
+        links.forEach(l=>l.classList.remove('active'))
+        const a=document.querySelector(`.nav-link[href="#${e.target.id}"]`)
+        if(a) a.classList.add('active')
+      }
+    })
+  },{rootMargin:'-20% 0px -70% 0px'})
+  sections.forEach(s=>observer.observe(s))
+})()
+</script>
+</body>
+</html>
