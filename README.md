@@ -8,6 +8,9 @@
 [![Status](https://img.shields.io/badge/Status-Active-22C55E?style=for-the-badge)]()
 [![GPIO](https://img.shields.io/badge/GPIO-Multi--Backend-F97316?style=for-the-badge)]()
 
+
+[![Raspberry Pi Guide](https://img.shields.io/badge/Raspberry_Pi_Guide-C51A4A?style=flat&logo=raspberrypi&logoColor=white)](https://krishnavamsi333.github.io/RPI/)
+
 **A comprehensive, interactive terminal tool for testing every major Raspberry Pi hardware interface.**  
 GPIO · PWM · I2C · SPI · UART · Servo · Interrupts · CI/Headless Mode
 
