@@ -1658,6 +1658,7 @@ function copyPdCode(btn){
 
   const gpioPins=PINS.filter(p=>p[1]!==null)
 
+  // ── BUILD PIN CARDS ──
   gpioPins.forEach(p=>{
     const div=document.createElement('div')
     div.className='planner-pin'+(p[3]==='PWR33'||p[3]==='PWR5'||p[3]==='GND'||p[3]==='ID'?' reserved':'')
@@ -1665,7 +1666,7 @@ function copyPdCode(btn){
     div.innerHTML=`<div class="planner-pin-num">Pin ${p[0]} · BCM${p[1]}</div><div class="planner-pin-name">${p[2]}</div><div class="planner-pin-assign" id="pa-${p[0]}"></div>`
     div.onclick=()=>{
       if(div.classList.contains('reserved')) return
-      gpioPins.forEach(pp=>{ const d=document.getElementById('pp-'+pp[0]); if(d&&!d.classList.contains('reserved')&&!d.classList.contains('assigned')) d.style.outline='' })
+      gpioPins.forEach(pp=>{ const d=document.getElementById('pp-'+pp[0]); if(d&&!d.classList.contains('reserved')&&!d.classList.contains('conflict')) d.style.outline='' })
       selectedPin=p; div.style.outline='2px solid var(--blue)'
       selPinLabel.textContent=`Pin ${p[0]} · BCM${p[1]} · ${p[2]}`
       fnSel.value=assignments[p[0]]?.fn||''
@@ -1674,23 +1675,115 @@ function copyPdCode(btn){
     grid.appendChild(div)
   })
 
-  function checkConflicts(){
-    const conflicts=[]; const fnMap={}
+  // ── CONFLICT RULES ──
+  // Each rule defines a "hardware resource". A conflict fires only when two
+  // assigned pins share the SAME resource AND the same resource-instance.
+  // Functions not listed here (LED, Button, Sensor, Custom) never conflict.
+  //
+  // resourceKey(bcm, fn) → string like "UART0" | "SPI0_BUS" | "I2C1" | "PWM0"
+  // Returns null = no shared-resource rule → never conflicts with others.
+  function resourceKey(bcm, fn){
+    const f=fn.toUpperCase()
+
+    // ── UART: each UART bus is a separate resource ──
+    // UART0: GPIO14/15  UART1: GPIO14/15 (same pins, different alt)
+    // UART2: GPIO0/1    UART3: GPIO4/5   UART4: GPIO8/9   UART5: GPIO12-15
+    if(f.includes('UART TX')||f.includes('UART RX')){
+      if(bcm===14||bcm===15) return 'UART:0_1'   // UART0 or UART1 — same pins
+      if(bcm===0 ||bcm===1 ) return 'UART:2'
+      if(bcm===4 ||bcm===5 ) return 'UART:3'
+      if(bcm===8 ||bcm===9 ) return 'UART:4'
+      if(bcm===12||bcm===13||bcm===14||bcm===15) return 'UART:5'
+      return 'UART:'+bcm  // fallback unique
+    }
+
+    // ── I2C: each bus is separate ──
+    // I2C1: GPIO2/3   I2C3: GPIO2-5   I2C4: GPIO7-9   I2C5: GPIO10-13   I2C6: GPIO0/1/22/23
+    if(f.includes('I2C SDA')||f.includes('I2C SCL')){
+      if(bcm===2||bcm===3)   return 'I2C:1'
+      if(bcm===4||bcm===5)   return 'I2C:3'
+      if(bcm===7||bcm===8||bcm===9) return 'I2C:4'
+      if(bcm===10||bcm===11||bcm===12||bcm===13) return 'I2C:5'
+      if(bcm===0||bcm===1||bcm===22||bcm===23)   return 'I2C:6'
+      return 'I2C:'+bcm
+    }
+
+    // ── SPI: each bus is separate ──
+    // SPI0: GPIO7-11  SPI1: GPIO16-21  SPI3: GPIO0-4  SPI4: GPIO4-8  SPI5: GPIO12-16  SPI6: GPIO18-21
+    if(f.includes('SPI')){
+      if(bcm>=7 &&bcm<=11) return 'SPI:0'
+      if(bcm>=16&&bcm<=21) return 'SPI:1'
+      if(bcm>=0 &&bcm<=4 ) return 'SPI:3'
+      if(bcm>=4 &&bcm<=8 ) return 'SPI:4'
+      if(bcm>=12&&bcm<=16) return 'SPI:5'
+      if(bcm>=18&&bcm<=21) return 'SPI:6'
+      return 'SPI:'+bcm
+    }
+
+    // ── PWM: 2 hardware channels ──
+    // PWM0: GPIO12 or GPIO18   PWM1: GPIO13 or GPIO19
+    if(f==='PWM'){
+      if(bcm===12||bcm===18) return 'PWM:0'
+      if(bcm===13||bcm===19) return 'PWM:1'
+      return 'PWM:'+bcm
+    }
+
+    // ── 1-Wire: single bus (can share physically but kernel handles it) ──
+    if(f==='1-WIRE') return '1WIRE:'+bcm
+
+    // LED, Button, Sensor, Custom — each pin is its own resource, no cross-pin conflict
+    return null
+  }
+
+  // True conflict = two different pins share the same hardware resource key
+  // AND that key is not null (i.e. it's a shared bus, not a standalone function)
+  function getConflictingPins(){
+    const resourceMap={} // resourceKey → [pin numbers]
     Object.entries(assignments).forEach(([pin,{fn}])=>{
-      if(!fnMap[fn]) fnMap[fn]=[]; fnMap[fn].push(pin)
+      const p=PINS.find(x=>x[0]==Number(pin))
+      if(!p||p[1]===null) return
+      const rk=resourceKey(p[1], fn)
+      if(!rk) return  // standalone — never conflicts
+      if(!resourceMap[rk]) resourceMap[rk]=[]
+      resourceMap[rk].push(Number(pin))
     })
-    Object.entries(fnMap).forEach(([fn,pins])=>{ if(pins.length>1) conflicts.push(`"${fn}" on Pins: ${pins.map(p=>{const pp=PINS.find(x=>x[0]==p);return pp?`${p}(BCM${pp[1]})`:p}).join(', ')}`) })
-    conflictList.innerHTML=conflicts.length?conflicts.map(c=>`<div class="conflict-item">⚠ ${c}</div>`).join(''):'<div style="font-size:10px;color:var(--text3)">No conflicts</div>'
+    // Build set of pins that are in a conflicting group
+    const conflictPins=new Set()
+    const conflictGroups=[]
+    Object.entries(resourceMap).forEach(([rk,pins])=>{
+      if(pins.length>1){
+        pins.forEach(p=>conflictPins.add(p))
+        conflictGroups.push({rk,pins})
+      }
+    })
+    return{conflictPins,conflictGroups}
+  }
+
+  function checkConflicts(){
+    const{conflictPins,conflictGroups}=getConflictingPins()
+
+    // Update pin card styles
     gpioPins.forEach(p=>{
       const el=document.getElementById('pp-'+p[0])
       if(!el||el.classList.contains('reserved')) return
       el.classList.remove('conflict')
-      if(assignments[p[0]]){
-        const fn=assignments[p[0]].fn
-        const dupes=Object.entries(assignments).filter(([op,{fn:of}])=>of===fn&&Number(op)!==p[0])
-        if(dupes.length) el.classList.add('conflict')
-      }
+      if(conflictPins.has(p[0])) el.classList.add('conflict')
     })
+
+    // Update conflict list
+    if(conflictGroups.length===0){
+      conflictList.innerHTML='<div style="font-size:10px;color:var(--text3)">No conflicts</div>'
+      return
+    }
+    conflictList.innerHTML=conflictGroups.map(({rk,pins})=>{
+      const label=rk.replace(':',' Bus ')
+      const pinLabels=pins.map(ph=>{
+        const pp=PINS.find(x=>x[0]===ph)
+        const fn=assignments[ph]?.fn||'?'
+        return `Pin ${ph}(BCM${pp?.[1]}) [${fn}]`
+      }).join(' ↔ ')
+      return `<div class="conflict-item">⚠ ${label}: ${pinLabels}</div>`
+    }).join('')
   }
 
   assignBtn.onclick=()=>{
