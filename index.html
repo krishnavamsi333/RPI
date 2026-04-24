@@ -891,52 +891,62 @@ footer{border-top:1px solid var(--border2);padding:30px 60px;background:var(--bg
     <div class="section-hdr">
       <div class="section-tag">Interactive GPIO Planner</div>
       <h2 class="section-title">Pin Assignment Planner</h2>
-      <p class="section-sub">Assign GPIO functions and detect conflicts in real time · Click a pin to select · Reserved pins are greyed out</p>
+      <p class="section-sub">Click any GPIO pin → see its ALT functions → pick one to assign · Conflict detection is bus-aware (two UARTs on different pins = ✓ OK)</p>
     </div>
     <div class="planner-wrap">
+      <!-- left: pin grid -->
       <div>
         <div class="planner-grid" id="planner-grid"></div>
       </div>
+      <!-- right: detail sidebar -->
       <div class="planner-sidebar">
-        <h3>Assign Pin</h3>
-        <div id="planner-assign-form" style="display:none">
-          <div style="font-size:12px;font-weight:600;margin-bottom:6px" id="planner-sel-pin-label">Select a GPIO pin</div>
-          <select class="planner-sel" id="planner-function-sel">
-            <option value="">— Select function —</option>
-            <option value="LED">LED output</option>
-            <option value="Button">Button input</option>
-            <option value="I2C SDA">I²C SDA</option>
-            <option value="I2C SCL">I²C SCL</option>
-            <option value="SPI MOSI">SPI MOSI</option>
-            <option value="SPI MISO">SPI MISO</option>
-            <option value="SPI SCLK">SPI SCLK</option>
-            <option value="SPI CE">SPI CE</option>
-            <option value="UART TX">UART TX</option>
-            <option value="UART RX">UART RX</option>
-            <option value="PWM">PWM</option>
-            <option value="1-Wire">1-Wire</option>
-            <option value="Sensor">Sensor input</option>
-            <option value="Custom">Custom</option>
-          </select>
-          <div style="display:flex;gap:6px;margin-top:8px">
-            <button class="planner-btn" style="flex:1" id="planner-assign-btn">Assign</button>
-            <button class="planner-btn danger" style="flex:0 0 60px" id="planner-clear-btn">Clear</button>
+
+        <!-- idle state -->
+        <div id="planner-idle">
+          <div style="font-size:11px;color:var(--text3);text-align:center;padding:20px 0">
+            ← Click a GPIO pin<br>to see its ALT functions
           </div>
         </div>
-        <div style="margin-top:12px">
-          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);margin-bottom:8px">Conflicts Detected</div>
-          <div id="planner-conflicts" style="display:flex;flex-direction:column;gap:6px;min-height:40px">
+
+        <!-- active state: shown when a pin is selected -->
+        <div id="planner-assign-form" style="display:none">
+
+          <!-- pin header -->
+          <div id="planner-pin-hdr" style="margin-bottom:12px"></div>
+
+          <!-- ALT function picker -->
+          <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);margin-bottom:6px">ALT Functions — pick to assign</div>
+          <div id="planner-alt-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px"></div>
+
+          <!-- divider -->
+          <div style="border-top:1px solid var(--border);margin:10px 0"></div>
+
+          <!-- general functions (GPIO, LED, Button etc.) -->
+          <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);margin-bottom:6px">General Use</div>
+          <div id="planner-gen-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px"></div>
+
+          <!-- action buttons -->
+          <button class="planner-btn danger" id="planner-clear-btn" style="width:100%">Clear this pin</button>
+        </div>
+
+        <!-- conflict report -->
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+          <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);margin-bottom:8px">Conflicts</div>
+          <div id="planner-conflicts" style="display:flex;flex-direction:column;gap:5px;min-height:36px">
             <div style="font-size:10px;color:var(--text3)">No conflicts</div>
           </div>
         </div>
-        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:5px">
-          <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text2)"><div style="width:12px;height:12px;border-radius:3px;border:1px solid var(--border2);background:var(--bg3)"></div>Available GPIO</div>
-          <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text2)"><div style="width:12px;height:12px;border-radius:3px;border:1px solid var(--grn-b);background:var(--grn-d)"></div>Assigned</div>
-          <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text2)"><div style="width:12px;height:12px;border-radius:3px;border:1px solid var(--red-b);background:var(--red-d)"></div>Conflict</div>
-          <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text2)"><div style="width:12px;height:12px;border-radius:3px;border:1px solid var(--border2);opacity:.35;background:var(--bg3)"></div>Reserved / Power</div>
+
+        <!-- legend -->
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:5px">
+          <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text2)"><div style="width:11px;height:11px;border-radius:3px;border:1px solid var(--border2);background:var(--bg3)"></div>Available</div>
+          <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text2)"><div style="width:11px;height:11px;border-radius:3px;border:1px solid var(--grn-b);background:var(--grn-d)"></div>Assigned</div>
+          <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text2)"><div style="width:11px;height:11px;border-radius:3px;border:1px solid var(--red-b);background:var(--red-d)"></div>Conflict</div>
+          <div style="display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text2)"><div style="width:11px;height:11px;border-radius:3px;border:1px solid var(--border2);opacity:.35;background:var(--bg3)"></div>Reserved / Power</div>
         </div>
-        <button class="planner-btn danger" id="planner-reset-btn" style="margin-top:12px">Reset all</button>
-        <button class="planner-btn" id="planner-json-btn" style="margin-top:6px">Export as JSON</button>
+
+        <button class="planner-btn danger" id="planner-reset-btn" style="margin-top:12px;width:100%">Reset all</button>
+        <button class="planner-btn" id="planner-json-btn" style="margin-top:6px;width:100%">Export as JSON</button>
       </div>
     </div>
   </div>
@@ -1646,70 +1656,59 @@ function copyPdCode(btn){
 
 // ── GPIO PLANNER ──
 ;(function buildPlanner(){
-  const grid=document.getElementById('planner-grid')
-  const assignForm=document.getElementById('planner-assign-form')
-  const selPinLabel=document.getElementById('planner-sel-pin-label')
-  const fnSel=document.getElementById('planner-function-sel')
-  const assignBtn=document.getElementById('planner-assign-btn')
-  const clearBtn=document.getElementById('planner-clear-btn')
-  const conflictList=document.getElementById('planner-conflicts')
-  const assignments={}
-  let selectedPin=null
+  const grid        = document.getElementById('planner-grid')
+  const idleMsg     = document.getElementById('planner-idle')
+  const assignForm  = document.getElementById('planner-assign-form')
+  const pinHdr      = document.getElementById('planner-pin-hdr')
+  const altList     = document.getElementById('planner-alt-list')
+  const genList     = document.getElementById('planner-gen-list')
+  const clearBtn    = document.getElementById('planner-clear-btn')
+  const conflictList= document.getElementById('planner-conflicts')
+  const assignments = {}   // pin# → { fn, altMode, label }
+  let selectedPin   = null
 
-  const gpioPins=PINS.filter(p=>p[1]!==null)
+  const gpioPins = PINS.filter(p => p[1] !== null)
 
-  // ── BUILD PIN CARDS ──
-  gpioPins.forEach(p=>{
-    const div=document.createElement('div')
-    div.className='planner-pin'+(p[3]==='PWR33'||p[3]==='PWR5'||p[3]==='GND'||p[3]==='ID'?' reserved':'')
-    div.id='pp-'+p[0]
-    div.innerHTML=`<div class="planner-pin-num">Pin ${p[0]} · BCM${p[1]}</div><div class="planner-pin-name">${p[2]}</div><div class="planner-pin-assign" id="pa-${p[0]}"></div>`
-    div.onclick=()=>{
-      if(div.classList.contains('reserved')) return
-      gpioPins.forEach(pp=>{ const d=document.getElementById('pp-'+pp[0]); if(d&&!d.classList.contains('reserved')&&!d.classList.contains('conflict')) d.style.outline='' })
-      selectedPin=p; div.style.outline='2px solid var(--blue)'
-      selPinLabel.textContent=`Pin ${p[0]} · BCM${p[1]} · ${p[2]}`
-      fnSel.value=assignments[p[0]]?.fn||''
-      assignForm.style.display='block'
-    }
-    grid.appendChild(div)
-  })
+  // ── ALT function → semantic label mapping ──
+  function altLabel(raw){
+    if(!raw||raw==='—') return null
+    const u = raw.toUpperCase()
+    if(u.includes('SDA')) return {fn:'I2C SDA', label:raw, cls:'ch-i2c'}
+    if(u.includes('SCL')) return {fn:'I2C SCL', label:raw, cls:'ch-i2c'}
+    if(u.includes('TXD')||u.includes('TX')) return {fn:'UART TX', label:raw, cls:'ch-uart'}
+    if(u.includes('RXD')||u.includes('RX')) return {fn:'UART RX', label:raw, cls:'ch-uart'}
+    if(u.includes('CTS')) return {fn:'UART CTS', label:raw, cls:'ch-uart'}
+    if(u.includes('RTS')) return {fn:'UART RTS', label:raw, cls:'ch-uart'}
+    if(u.includes('MOSI')) return {fn:'SPI MOSI', label:raw, cls:'ch-spi'}
+    if(u.includes('MISO')) return {fn:'SPI MISO', label:raw, cls:'ch-spi'}
+    if(u.includes('SCLK')||u.includes('SCK')) return {fn:'SPI SCLK', label:raw, cls:'ch-spi'}
+    if(u.includes('CE')&&u.includes('N'))     return {fn:'SPI CE',   label:raw, cls:'ch-spi'}
+    if(u.includes('PWM')) return {fn:'PWM', label:raw, cls:'ch-pwm'}
+    if(u.includes('PCM')) return {fn:'PCM/I2S', label:raw, cls:'ch-pcm'}
+    if(u.includes('GPCLK')||u.includes('CLK')) return {fn:'GPCLK', label:raw, cls:'ch-clk'}
+    if(u.includes('ARM')||u.includes('JTAG')) return {fn:'JTAG', label:raw, cls:'ch-jtag'}
+    return {fn:raw, label:raw, cls:'ch-dpi'}
+  }
 
-  // ── CONFLICT RULES ──
-  // Each rule defines a "hardware resource". A conflict fires only when two
-  // assigned pins share the SAME resource AND the same resource-instance.
-  // Functions not listed here (LED, Button, Sensor, Custom) never conflict.
-  //
-  // resourceKey(bcm, fn) → string like "UART0" | "SPI0_BUS" | "I2C1" | "PWM0"
-  // Returns null = no shared-resource rule → never conflicts with others.
+  // ── CONFLICT RULES (bus-aware) ──
   function resourceKey(bcm, fn){
-    const f=fn.toUpperCase()
-
-    // ── UART: each UART bus is a separate resource ──
-    // UART0: GPIO14/15  UART1: GPIO14/15 (same pins, different alt)
-    // UART2: GPIO0/1    UART3: GPIO4/5   UART4: GPIO8/9   UART5: GPIO12-15
-    if(f.includes('UART TX')||f.includes('UART RX')){
-      if(bcm===14||bcm===15) return 'UART:0_1'   // UART0 or UART1 — same pins
+    const f = fn.toUpperCase()
+    if(f.includes('UART')){
+      if(bcm===14||bcm===15) return 'UART:0_1'
       if(bcm===0 ||bcm===1 ) return 'UART:2'
       if(bcm===4 ||bcm===5 ) return 'UART:3'
       if(bcm===8 ||bcm===9 ) return 'UART:4'
-      if(bcm===12||bcm===13||bcm===14||bcm===15) return 'UART:5'
-      return 'UART:'+bcm  // fallback unique
+      if(bcm>=12 &&bcm<=15 ) return 'UART:5'
+      return 'UART:'+bcm
     }
-
-    // ── I2C: each bus is separate ──
-    // I2C1: GPIO2/3   I2C3: GPIO2-5   I2C4: GPIO7-9   I2C5: GPIO10-13   I2C6: GPIO0/1/22/23
-    if(f.includes('I2C SDA')||f.includes('I2C SCL')){
-      if(bcm===2||bcm===3)   return 'I2C:1'
-      if(bcm===4||bcm===5)   return 'I2C:3'
-      if(bcm===7||bcm===8||bcm===9) return 'I2C:4'
-      if(bcm===10||bcm===11||bcm===12||bcm===13) return 'I2C:5'
-      if(bcm===0||bcm===1||bcm===22||bcm===23)   return 'I2C:6'
+    if(f.includes('I2C')||f.includes('SDA')||f.includes('SCL')){
+      if(bcm===2||bcm===3)              return 'I2C:1'
+      if(bcm===4||bcm===5)              return 'I2C:3'
+      if(bcm===7||bcm===8||bcm===9)     return 'I2C:4'
+      if(bcm>=10&&bcm<=13)              return 'I2C:5'
+      if(bcm===0||bcm===1||bcm===22||bcm===23) return 'I2C:6'
       return 'I2C:'+bcm
     }
-
-    // ── SPI: each bus is separate ──
-    // SPI0: GPIO7-11  SPI1: GPIO16-21  SPI3: GPIO0-4  SPI4: GPIO4-8  SPI5: GPIO12-16  SPI6: GPIO18-21
     if(f.includes('SPI')){
       if(bcm>=7 &&bcm<=11) return 'SPI:0'
       if(bcm>=16&&bcm<=21) return 'SPI:1'
@@ -1719,38 +1718,28 @@ function copyPdCode(btn){
       if(bcm>=18&&bcm<=21) return 'SPI:6'
       return 'SPI:'+bcm
     }
-
-    // ── PWM: 2 hardware channels ──
-    // PWM0: GPIO12 or GPIO18   PWM1: GPIO13 or GPIO19
     if(f==='PWM'){
       if(bcm===12||bcm===18) return 'PWM:0'
       if(bcm===13||bcm===19) return 'PWM:1'
       return 'PWM:'+bcm
     }
-
-    // ── 1-Wire: single bus (can share physically but kernel handles it) ──
-    if(f==='1-WIRE') return '1WIRE:'+bcm
-
-    // LED, Button, Sensor, Custom — each pin is its own resource, no cross-pin conflict
+    if(f==='1-WIRE'||f==='1-Wire') return '1WIRE:'+bcm
+    // GPIO/LED/Button/Sensor/Custom — per-pin only, never cross-conflict
     return null
   }
 
-  // True conflict = two different pins share the same hardware resource key
-  // AND that key is not null (i.e. it's a shared bus, not a standalone function)
   function getConflictingPins(){
-    const resourceMap={} // resourceKey → [pin numbers]
+    const rmap = {}
     Object.entries(assignments).forEach(([pin,{fn}])=>{
-      const p=PINS.find(x=>x[0]==Number(pin))
+      const p = PINS.find(x=>x[0]==Number(pin))
       if(!p||p[1]===null) return
-      const rk=resourceKey(p[1], fn)
-      if(!rk) return  // standalone — never conflicts
-      if(!resourceMap[rk]) resourceMap[rk]=[]
-      resourceMap[rk].push(Number(pin))
+      const rk = resourceKey(p[1], fn)
+      if(!rk) return
+      if(!rmap[rk]) rmap[rk]=[]
+      rmap[rk].push(Number(pin))
     })
-    // Build set of pins that are in a conflicting group
-    const conflictPins=new Set()
-    const conflictGroups=[]
-    Object.entries(resourceMap).forEach(([rk,pins])=>{
+    const conflictPins=new Set(), conflictGroups=[]
+    Object.entries(rmap).forEach(([rk,pins])=>{
       if(pins.length>1){
         pins.forEach(p=>conflictPins.add(p))
         conflictGroups.push({rk,pins})
@@ -1761,60 +1750,174 @@ function copyPdCode(btn){
 
   function checkConflicts(){
     const{conflictPins,conflictGroups}=getConflictingPins()
-
-    // Update pin card styles
     gpioPins.forEach(p=>{
       const el=document.getElementById('pp-'+p[0])
       if(!el||el.classList.contains('reserved')) return
-      el.classList.remove('conflict')
-      if(conflictPins.has(p[0])) el.classList.add('conflict')
+      el.classList.toggle('conflict', conflictPins.has(p[0]))
     })
-
-    // Update conflict list
-    if(conflictGroups.length===0){
-      conflictList.innerHTML='<div style="font-size:10px;color:var(--text3)">No conflicts</div>'
+    if(!conflictGroups.length){
+      conflictList.innerHTML='<div style="font-size:10px;color:var(--text3)">No conflicts ✓</div>'
       return
     }
     conflictList.innerHTML=conflictGroups.map(({rk,pins})=>{
-      const label=rk.replace(':',' Bus ')
-      const pinLabels=pins.map(ph=>{
+      const busLabel = rk.replace(':',' Bus ')
+      const pinLabels = pins.map(ph=>{
         const pp=PINS.find(x=>x[0]===ph)
-        const fn=assignments[ph]?.fn||'?'
-        return `Pin ${ph}(BCM${pp?.[1]}) [${fn}]`
+        return `Pin ${ph} BCM${pp?.[1]} [${assignments[ph]?.label||'?'}]`
       }).join(' ↔ ')
-      return `<div class="conflict-item">⚠ ${label}: ${pinLabels}</div>`
+      return `<div class="conflict-item">⚠ ${busLabel}<br><span style="font-size:9px">${pinLabels}</span></div>`
     }).join('')
   }
 
-  assignBtn.onclick=()=>{
-    if(!selectedPin||!fnSel.value) return
-    assignments[selectedPin[0]]={fn:fnSel.value}
-    const el=document.getElementById('pp-'+selectedPin[0])
-    if(el){ el.classList.add('assigned'); el.style.outline=''; el.querySelector('.planner-pin-assign').textContent=fnSel.value }
+  // ── ASSIGN a function to the selected pin ──
+  function assignFn(fn, altMode, label){
+    if(!selectedPin) return
+    const ph = selectedPin[0]
+    assignments[ph] = {fn, altMode, label}
+    const el = document.getElementById('pp-'+ph)
+    if(el){
+      el.classList.add('assigned')
+      el.style.outline=''
+      el.querySelector('.planner-pin-assign').textContent = label
+    }
+    renderSidebar(selectedPin)
     checkConflicts()
-    showToast(`Assigned: Pin ${selectedPin[0]} → ${fnSel.value}`)
+    showToast(`Pin ${ph} → ${label}`)
   }
+
+  // ── RENDER sidebar for a given pin ──
+  function renderSidebar(p){
+    const[phys,bcm,lbl,type,desc,alts] = p
+    const pull = desc.includes('pull=High')?'High':'Low'
+    const cur = assignments[phys]
+
+    // Header
+    pinHdr.innerHTML=`
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="pl pt-${type}" style="font-size:11px;cursor:default">${lbl}</span>
+        <span style="font-family:'Syne',sans-serif;font-size:16px;font-weight:800">Pin ${phys}</span>
+        <span style="color:var(--blue);font-weight:700;font-size:12px">BCM${bcm}</span>
+        <span class="${pull==='High'?'pull-hi':'pull-lo'}" style="font-size:9px">${pull}</span>
+      </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:4px">${desc}</div>
+      ${cur?`<div style="margin-top:6px;padding:5px 10px;background:var(--grn-d);border:1px solid var(--grn-b);border-radius:5px;font-size:10px;color:var(--green);font-weight:600">Assigned: ${cur.label}${cur.altMode?' ('+cur.altMode+')':''}</div>`:''}
+    `
+
+    // ALT function buttons
+    altList.innerHTML=''
+    const altModes = ['ALT0','ALT1','ALT2','ALT3','ALT4','ALT5']
+    let hasAlt = false
+    altModes.forEach(mode=>{
+      const raw = alts[mode]
+      if(!raw) return
+      const parsed = altLabel(raw)
+      if(!parsed) return
+      hasAlt = true
+      const isActive = cur?.altMode===mode
+      const btn = document.createElement('button')
+      btn.style.cssText=`display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;border-radius:6px;border:1px solid ${isActive?'var(--blue)':'var(--border2)'};background:${isActive?'var(--blu-d)':'var(--bg3)'};cursor:pointer;text-align:left;transition:all .12s;font-family:'JetBrains Mono',monospace`
+      btn.innerHTML=`
+        <span style="font-size:9px;font-weight:700;color:var(--text3);min-width:32px">${mode}</span>
+        <span class="chip ${parsed.cls}" style="font-size:10px">${parsed.label}</span>
+        <span style="font-size:9px;color:var(--text3);margin-left:auto">${parsed.fn}</span>
+        ${isActive?'<span style="color:var(--blue);font-size:12px">✓</span>':''}
+      `
+      btn.onmouseover=()=>{ if(!isActive) btn.style.background='var(--bg4)' }
+      btn.onmouseout =()=>{ if(!isActive) btn.style.background='var(--bg3)' }
+      btn.onclick=()=>assignFn(parsed.fn, mode, parsed.label+' ('+mode+')')
+      altList.appendChild(btn)
+    })
+    if(!hasAlt){
+      altList.innerHTML='<div style="font-size:10px;color:var(--text3)">No special ALT functions for this pin</div>'
+    }
+
+    // General use buttons
+    const general=[
+      {fn:'GPIO Output', label:'GPIO Output', cls:'ch-none'},
+      {fn:'GPIO Input',  label:'GPIO Input',  cls:'ch-none'},
+      {fn:'LED',         label:'LED Output',  cls:'ch-none'},
+      {fn:'Button',      label:'Button Input',cls:'ch-none'},
+      {fn:'Sensor',      label:'Sensor Input',cls:'ch-none'},
+      {fn:'1-Wire',      label:'1-Wire',      cls:'ch-pcm'},
+      {fn:'PWM',         label:'PWM (software)',cls:'ch-pwm'},
+      {fn:'Custom',      label:'Custom…',     cls:'ch-none'},
+    ]
+    genList.innerHTML=''
+    general.forEach(({fn,label,cls})=>{
+      const isActive = cur?.fn===fn && !cur?.altMode
+      const btn=document.createElement('button')
+      btn.style.cssText=`display:flex;align-items:center;gap:8px;width:100%;padding:6px 10px;border-radius:6px;border:1px solid ${isActive?'var(--blue)':'var(--border2)'};background:${isActive?'var(--blu-d)':'var(--bg3)'};cursor:pointer;text-align:left;transition:all .12s;font-family:'JetBrains Mono',monospace`
+      btn.innerHTML=`<span class="chip ${cls}" style="font-size:10px">${label}</span>${isActive?'<span style="color:var(--blue);font-size:12px;margin-left:auto">✓</span>':''}`
+      btn.onmouseover=()=>{ if(!isActive) btn.style.background='var(--bg4)' }
+      btn.onmouseout =()=>{ if(!isActive) btn.style.background='var(--bg3)' }
+      btn.onclick=()=>assignFn(fn, null, label)
+      genList.appendChild(btn)
+    })
+  }
+
+  // ── BUILD PIN CARDS ──
+  gpioPins.forEach(p=>{
+    const div=document.createElement('div')
+    const isReserved = p[3]==='PWR33'||p[3]==='PWR5'||p[3]==='GND'||p[3]==='ID'
+    div.className='planner-pin'+(isReserved?' reserved':'')
+    div.id='pp-'+p[0]
+
+    // Show up to 3 ALT labels on the card
+    const altSnippet = Object.entries(p[5]).slice(0,3).filter(([,v])=>v).map(([k,v])=>`<span style="font-size:8px;color:var(--text3)">${k}:${v}</span>`).join(' ')
+
+    div.innerHTML=`
+      <div class="planner-pin-num">Pin ${p[0]}${p[1]!==null?' · BCM'+p[1]:''}</div>
+      <div class="planner-pin-name">${p[2]}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:3px;min-height:14px">${altSnippet}</div>
+      <div class="planner-pin-assign" id="pa-${p[0]}"></div>
+    `
+    div.onclick=()=>{
+      if(isReserved) return
+      // deselect old outline
+      gpioPins.forEach(pp=>{ const d=document.getElementById('pp-'+pp[0]); if(d) d.style.outline='' })
+      selectedPin=p
+      div.style.outline='2px solid var(--blue)'
+      idleMsg.style.display='none'
+      assignForm.style.display='block'
+      renderSidebar(p)
+    }
+    grid.appendChild(div)
+  })
+
+  // ── CLEAR button ──
   clearBtn.onclick=()=>{
     if(!selectedPin) return
-    delete assignments[selectedPin[0]]
-    const el=document.getElementById('pp-'+selectedPin[0])
-    if(el){ el.classList.remove('assigned','conflict'); el.style.outline=''; el.querySelector('.planner-pin-assign').textContent='' }
+    const ph=selectedPin[0]
+    delete assignments[ph]
+    const el=document.getElementById('pp-'+ph)
+    if(el){ el.classList.remove('assigned','conflict'); el.querySelector('.planner-pin-assign').textContent='' }
+    renderSidebar(selectedPin)
     checkConflicts()
+    showToast(`Pin ${ph} cleared`)
   }
+
+  // ── RESET all ──
   document.getElementById('planner-reset-btn').onclick=()=>{
     Object.keys(assignments).forEach(k=>delete assignments[k])
     gpioPins.forEach(p=>{
       const el=document.getElementById('pp-'+p[0])
       if(el){ el.classList.remove('assigned','conflict'); el.style.outline=''; el.querySelector('.planner-pin-assign').textContent='' }
     })
-    selectedPin=null; assignForm.style.display='none'; checkConflicts()
+    selectedPin=null
+    assignForm.style.display='none'
+    idleMsg.style.display='block'
+    checkConflicts()
     showToast('Planner reset')
   }
+
+  // ── EXPORT JSON ──
   document.getElementById('planner-json-btn').onclick=()=>{
-    const json=JSON.stringify(Object.entries(assignments).map(([pin,{fn}])=>{
-      const p=PINS.find(x=>x[0]==pin); return{pin:Number(pin),bcm:p?.[1],label:p?.[2],function:fn}
-    }),null,2)
-    navigator.clipboard.writeText(json); showToast('Assignment JSON copied!')
+    const out=Object.entries(assignments).map(([pin,{fn,altMode,label}])=>{
+      const p=PINS.find(x=>x[0]==pin)
+      return{pin:Number(pin),bcm:p?.[1],gpio_label:p?.[2],assigned_fn:fn,alt_mode:altMode||'GPIO',label}
+    })
+    navigator.clipboard.writeText(JSON.stringify(out,null,2))
+    showToast('Assignment JSON copied!')
   }
 })()
 
