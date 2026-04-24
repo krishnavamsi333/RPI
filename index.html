@@ -1728,21 +1728,52 @@ function copyPdCode(btn){
     return null
   }
 
+  // Role of a function on a bus — used to allow complementary roles (TX+RX, SDA+SCL, MOSI+MISO+SCLK+CE)
+  // A conflict is: same bus + same role assigned to two different pins
+  function busRole(fn){
+    const f=fn.toUpperCase()
+    if(f.includes('UART TX')||f.includes('TXD')) return 'TX'
+    if(f.includes('UART RX')||f.includes('RXD')) return 'RX'
+    if(f.includes('UART CTS')||f.includes('CTS')) return 'CTS'
+    if(f.includes('UART RTS')||f.includes('RTS')) return 'RTS'
+    if(f.includes('SDA')) return 'SDA'
+    if(f.includes('SCL')) return 'SCL'
+    if(f.includes('MOSI')) return 'MOSI'
+    if(f.includes('MISO')) return 'MISO'
+    if(f.includes('SCLK')||f.includes('SCK')) return 'SCLK'
+    if(f.includes('CE')&&f.includes('N')) return 'CE'   // multiple CEs allowed on SPI
+    if(f==='PWM') return 'PWM'
+    if(f==='1-WIRE'||f==='1-WIRE') return '1W'
+    return f  // fallback: treat whole name as role
+  }
+
   function getConflictingPins(){
+    // rmap: "BUS:instance:ROLE" → [pin numbers]
+    // Complementary roles on same bus (TX+RX, SDA+SCL, MOSI+MISO+SCLK) never share a key
+    // Only duplicate roles on same bus key will collide
     const rmap = {}
     Object.entries(assignments).forEach(([pin,{fn}])=>{
       const p = PINS.find(x=>x[0]==Number(pin))
       if(!p||p[1]===null) return
       const rk = resourceKey(p[1], fn)
-      if(!rk) return
-      if(!rmap[rk]) rmap[rk]=[]
-      rmap[rk].push(Number(pin))
+      if(!rk) return   // standalone (LED/Button/etc) — never conflicts
+      const role = busRole(fn)
+      // SPI CE lines: multiple CEs are valid on same bus (CE0, CE1, CE2...)
+      // so make CE unique per pin to avoid false conflict
+      const roleKey = (role==='CE') ? 'CE_'+p[0] : role
+      const fullKey = rk + ':' + roleKey
+      if(!rmap[fullKey]) rmap[fullKey]=[]
+      rmap[fullKey].push(Number(pin))
     })
     const conflictPins=new Set(), conflictGroups=[]
-    Object.entries(rmap).forEach(([rk,pins])=>{
+    Object.entries(rmap).forEach(([fullKey,pins])=>{
       if(pins.length>1){
         pins.forEach(p=>conflictPins.add(p))
-        conflictGroups.push({rk,pins})
+        // Extract bus and role for display
+        const parts = fullKey.split(':')
+        const busDisplay = parts.slice(0,-1).join(' Bus ')
+        const roleDisplay = parts[parts.length-1]
+        conflictGroups.push({busDisplay, roleDisplay, pins})
       }
     })
     return{conflictPins,conflictGroups}
@@ -1759,13 +1790,12 @@ function copyPdCode(btn){
       conflictList.innerHTML='<div style="font-size:10px;color:var(--text3)">No conflicts ✓</div>'
       return
     }
-    conflictList.innerHTML=conflictGroups.map(({rk,pins})=>{
-      const busLabel = rk.replace(':',' Bus ')
+    conflictList.innerHTML=conflictGroups.map(({busDisplay,roleDisplay,pins})=>{
       const pinLabels = pins.map(ph=>{
         const pp=PINS.find(x=>x[0]===ph)
         return `Pin ${ph} BCM${pp?.[1]} [${assignments[ph]?.label||'?'}]`
       }).join(' ↔ ')
-      return `<div class="conflict-item">⚠ ${busLabel}<br><span style="font-size:9px">${pinLabels}</span></div>`
+      return `<div class="conflict-item">⚠ ${busDisplay} — duplicate ${roleDisplay}<br><span style="font-size:9px">${pinLabels}</span></div>`
     }).join('')
   }
 
